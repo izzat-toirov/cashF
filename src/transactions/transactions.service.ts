@@ -250,10 +250,15 @@ export class TransactionsService {
         return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
       }
   
-      // 1. Bazadagi barcha mavjud kategoriyalarni bir marta o'qib olamiz (tez ishlashi uchun)
+      // 1. "Nomalum" kategoriyasini tayyorlab olamiz (agar Sheets'da topilmasa ishlatish uchun)
+      const unknownCategory = await this.prisma.category.upsert({
+        where: { name: 'Nomalum' },
+        update: {},
+        create: { name: 'Nomalum', type: 'EXPENSE' }
+      });
+  
       const existingCategories = await this.prisma.category.findMany();
-      // Nomlar bo'yicha tezkor qidirish uchun Map yaratamiz
-      const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase(), cat]));
+      const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase().trim(), cat]));
   
       const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
       const monthMap: Record<string, number> = {
@@ -266,40 +271,38 @@ export class TransactionsService {
       const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
       const savedTransactions = [];
-      const skippedRecords = []; // Tashlab ketilganlar statistikasi uchun
   
       for (const record of allRecords) {
         if (!record.id) continue;
   
         try {
-          // 2. Kategoriya nomini tozalash va tekshirish
-          const sheetCatName = record.category?.trim().toLowerCase();
-          const categoryRecord = categoryMap.get(sheetCatName);
+          // 2. Kategoriya tekshiruvi
+          const sheetCatName = record.category?.toLowerCase().trim() || '';
+          let categoryRecord = categoryMap.get(sheetCatName);
   
-          // AGAR KATEGORIYA BAZADA BO'LMASA - BU REKORDNI SAQLAMAYMIZ
+          // Agar kategoriya topilmasa, uni "Nomalum"ga biriktiramiz
           if (!categoryRecord) {
-            this.logger.warn(`Kategoriya topilmadi, tashlab o'tildi: ${record.category}`);
-            skippedRecords.push({ id: record.id, category: record.category });
-            continue; 
+            categoryRecord = unknownCategory;
+            this.logger.warn(`Kategoriya topilmadi [${record.category}], 'Nomalum'ga biriktirildi. ID: ${record.id}`);
           }
   
           // 3. Sanani parse qilish
           const [d, m, y] = (record.date || "").split('.').map(Number);
           const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
   
-          // 4. Tranzaksiya obyektini tayyorlash
+          // 4. Tranzaksiya ma'lumotlari (HAMMA MAYDONLAR)
           const transactionData = {
             date: dbDate,
             amount: Number(record.amount) || 0,
-            description: record.description || '',
-            type: record.type || categoryRecord.type, // Bazadagi kategoriya turini olish afzal
+            description: record.description || '', // Tavsif
+            type: record.type || categoryRecord.type,
             sheetRowId: String(record.id), 
             month: monthNum,
             year: year,
             categoryId: categoryRecord.id, 
           };
   
-          // 5. Upsert (Bazaga yozish)
+          // 5. Bazaga yozish
           const result = await this.prisma.transaction.upsert({
             where: { sheetRowId: String(record.id) },
             update: transactionData,
@@ -317,14 +320,12 @@ export class TransactionsService {
   
       return {
         success: true,
-        message: `${monthName} sinxronizatsiya yakunlandi`,
+        message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
         stats: {
-          total_in_sheets: allRecords.length,
-          saved_count: savedTransactions.length,
-          skipped_count: skippedRecords.length
+          total: allRecords.length,
+          saved: savedTransactions.length
         },
-        data: savedTransactions,
-        skipped: skippedRecords // Qaysi qatorlar kirmay qolganini ko'rish uchun
+        data: savedTransactions
       };
   
     } catch (error: unknown) {
