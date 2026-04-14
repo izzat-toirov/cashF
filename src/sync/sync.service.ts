@@ -45,31 +45,27 @@ export class SyncService implements OnModuleInit {
       'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'
     ];
   
-    // 1. Validatsiya: Faqat ruxsat etilgan oy nomlarini o'tkazamiz
     if (!monthName || !validMonths.includes(monthName)) {
       this.logger.warn(`Noto'g'ri oy nomi bilan so'rov keldi: ${monthName}`);
       return { 
         success: false, 
-        message: `Yaroqsiz oy nomi: ${monthName}. Faqat o'zbekcha oy nomlarini yuboring.` 
+        message: `Yaroqsiz oy nomi: ${monthName}.` 
       };
     }
   
     try {
-      // 2. Sheets'dan ma'lumot olish
       const data = await this.sheetsService.getFullMonthData(monthName);
       
-      // Agar list umuman topilmasa yoki xato qaytsa
       if (!data) {
         return { success: false, message: `${monthName} listi topilmadi yoki bo'sh` };
       }
   
-      // Ma'lumotlar massivini shakllantirish (null bo'lsa bo'sh massiv oladi)
       const expenses = data.expenses || [];
       const incomes = data.incomes || [];
       const allRecords = [...expenses, ...incomes];
   
       if (allRecords.length === 0) {
-        return { success: true, message: `${monthName} oyida ma'lumotlar mavjud emas`, stats: { total: 0 } };
+        return { success: true, message: `${monthName} oyida ma'lumotlar mavjud emas`, data: [] };
       }
   
       const currentYear = new Date().getFullYear();
@@ -79,31 +75,26 @@ export class SyncService implements OnModuleInit {
       };
       
       const monthNum = monthMap[monthName];
-  
       const createdItems = [];
       const updatedItems = [];
   
-      // 3. Ma'lumotlarni bazaga saqlash (Loop)
       for (const record of allRecords) {
-        // Agarda qatorda ID (sheetRowId) bo'lmasa, o'tkazib yuboramiz
         if (!record.id) continue;
   
-        // Kategoriya bilan ishlash
+        // Kategoriya upsert
         const categoryRecord = await this.prisma.category.upsert({
           where: { name: record.category || 'Nomalum' },
           update: {},
           create: { 
             name: record.category || 'Nomalum', 
-            type: record.type || 'EXPENSE' // Default tip
+            type: record.type || 'EXPENSE' 
           },
         });
   
-        // Mavjud tranzaksiyani tekshirish
         const existing = await this.prisma.transaction.findUnique({
-          where: { sheetRowId: record.id },
+          where: { sheetRowId: String(record.id) },
         });
   
-        // Sanani parse qilish (dd.mm.yyyy)
         const dateParts = record.date?.split('.') || [];
         const dbDate = (dateParts.length === 3) 
           ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0]) 
@@ -114,7 +105,7 @@ export class SyncService implements OnModuleInit {
           amount: Number(record.amount) || 0,
           description: record.description || '',
           type: record.type,
-          sheetRowId: record.id,
+          sheetRowId: String(record.id),
           month: monthNum,
           year: currentYear,
           categoryId: categoryRecord.id,
@@ -124,16 +115,19 @@ export class SyncService implements OnModuleInit {
           const updated = await this.prisma.transaction.update({
             where: { id: existing.id },
             data: transactionData,
+            include: { category: true } // Kategoriya ma'lumotlarini ham qo'shib olish
           });
           updatedItems.push(updated);
         } else {
           const created = await this.prisma.transaction.create({
             data: transactionData,
+            include: { category: true }
           });
           createdItems.push(created);
         }
       }
   
+      // NATIJA: Faqat sonlar emas, barcha ob'ektlar qaytadi
       return {
         success: true,
         message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
@@ -142,17 +136,19 @@ export class SyncService implements OnModuleInit {
           createdCount: createdItems.length,
           updatedCount: updatedItems.length,
         },
+        data: {
+          new_records: createdItems,    // Yangi qo'shilganlar ro'yxati
+          updated_records: updatedItems // Yangilanganlar ro'yxati
+        }
       };
   
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Sync xatoligi [${monthName}]: ${msg}`);
-      
-      // Internal Server Error (500) o'rniga JSON qaytaramiz
       return { 
         success: false, 
-        message: `Sinxronizatsiya jarayonida xatolik: ${msg}` 
+        message: `Xatolik: ${msg}` 
       };
     }
-  }
+}
 }

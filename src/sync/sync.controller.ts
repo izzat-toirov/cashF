@@ -1,5 +1,7 @@
 import { Controller, Post, Body, Logger, Param } from '@nestjs/common';
 import { SyncService } from './sync.service';
+import { ApiBody, ApiOperation } from '@nestjs/swagger';
+import { SyncWebhookDto } from './dto/create-sync.dto';
 
 @Controller('sync')
 export class SyncController {
@@ -7,20 +9,17 @@ export class SyncController {
 
   constructor(private readonly syncService: SyncService) {}
 
-  @Post('webhook') // 1. Bu har doim tepada tursin
-  async handleWebhook(@Body() body: any) { // Body'ni 'any' qilib tekshiramiz
+  @Post('webhook')
+  @ApiOperation({ summary: 'Google Sheets-dan maʼlumotlarni sinxronlash' })
+  @ApiBody({ type: SyncWebhookDto }) // Swagger uchun aniqlashtirish
+  async handleWebhook(@Body() body: SyncWebhookDto) {
     this.logger.log(`Webhook keldi. Body: ${JSON.stringify(body)}`);
-
-    // Google Sheets Apps Script odatda 'monthName' kaliti bilan yuboradi
+    
     const month = body?.monthName;
-
-    if (!month || month === 'webhook') {
-      return { 
-        success: false, 
-        message: "O'y nomi (monthName) topilmadi yoki xato" 
-      };
+    if (!month) {
+      return { success: false, message: "monthName maydoni yuborilmadi." };
     }
-
+  
     return this.syncService.syncMonthToDatabase(month);
   }
   
