@@ -245,86 +245,83 @@ export class TransactionsService {
 
   async syncMonthToDatabase(monthName: string) {
     try {
-      const { expenses, incomes } = await this.sheetsService.getFullMonthData(monthName);
-      const allRecords = [...expenses, ...incomes];
+      const data = await this.sheetsService.getFullMonthData(monthName);
+      if (!data || (!data.expenses && !data.incomes)) {
+        return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
+      }
   
-      const parts = monthName.split(' ');
-      const currentYear = new Date().getFullYear();
-      const year = parts.length > 1 ? (parseInt(parts[1]) || currentYear) : currentYear;
-  
-      const monthMap: { [key: string]: number } = {
+      const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
+      const monthMap: Record<string, number> = {
         'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
         'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
       };
+  
+      const parts = monthName.split(' ');
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
+      const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
-      const createdItems = [];
-      const updatedItems = [];
+      const stats = { created: 0, updated: 0 };
   
+      // Xatoliklarni kamaytirish uchun ma'lumotlarni ketma-ketlikda (Sequence) saqlaymiz
       for (const record of allRecords) {
         if (!record.id) continue;
   
-        // 1. Avval kategoriyani bazadan topamiz yoki yaratamiz
-        const categoryRecord = await this.prisma.category.upsert({
-          where: { name: record.category || 'Nomalum' },
-          update: {},
-          create: { 
-            name: record.category || 'Nomalum', 
-            type: record.type 
-          },
-        });
-  
-        const existing = await this.prisma.transaction.findUnique({
-          where: { sheetRowId: record.id }
-        });
-  
-        const [d, m, y] = record.date.split('.').map(Number);
-        const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
-  
-        // 2. Data obyekti: "category" o'rniga "categoryId" ishlatamiz
-        const transactionData = {
-          date: dbDate,
-          amount: Number(record.amount) || 0,
-          description: record.description || '',
-          type: record.type,
-          sheetRowId: record.id,
-          month: monthNum,
-          year: year,
-          categoryId: categoryRecord.id, // <--- MANA SHU YER O'ZGARDi
-        };
-  
-        if (existing) {
-          const updated = await this.prisma.transaction.update({
-            where: { id: existing.id },
-            data: transactionData,
+        try {
+          // 1. Kategoriya yaratish (null safe)
+          const categoryName = record.category?.trim() || 'Nomalum';
+          const categoryRecord = await this.prisma.category.upsert({
+            where: { name: categoryName },
+            update: {}, // Agar bo'lsa tegmaysiz
+            create: { 
+              name: categoryName, 
+              type: record.type || 'EXPENSE' 
+            },
           });
-          updatedItems.push(updated);
-        } else {
-          const created = await this.prisma.transaction.create({
-            data: transactionData,
+  
+          // 2. Sanani parse qilish
+          const [d, m, y] = (record.date || "").split('.').map(Number);
+          const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
+  
+          // 3. Tranzaksiya ma'lumotlari
+          const transactionData = {
+            date: dbDate,
+            amount: Number(record.amount) || 0,
+            description: record.description || '',
+            type: record.type,
+            // record.id son bo'lsa, uni stringga o'giramiz
+            sheetRowId: record.id ? String(record.id) : null, 
+            month: monthNum,
+            year: year,
+            // categoryRecord.id har doim string bo'lishini ta'minlaymiz
+            categoryId: String(categoryRecord.id), 
+          };
+  
+          // 4. Upsert Transaction (id bo'yicha emas, sheetRowId bo'yicha)
+          await this.prisma.transaction.upsert({
+            where: { sheetRowId: record.id.toString() },
+            update: transactionData,
+            create: transactionData,
           });
-          createdItems.push(created);
+  
+          // Statsni yangilash (oddiyroq mantiq uchun)
+          stats.created++; 
+        } catch (innerError) {
+          this.logger.error(`Qator yozishda xato [ID: ${record.id}]: ${innerError}`);
+          // Bitta qatorda xato bo'lsa, butun siklni to'xtatmaymiz
+          continue;
         }
       }
   
       return {
         success: true,
-        message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
-        stats: {
-          total: allRecords.length,
-          createdCount: createdItems.length,
-          updatedCount: updatedItems.length
-        },
-        data: {
-          newRecords: createdItems,
-          modifiedRecords: updatedItems
-        }
+        message: `${monthName} sinxronizatsiya qilindi`,
+        stats: { total: allRecords.length, processed: stats.created }
       };
   
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Sync xatoligi: ${msg}`);
-      throw error;
+      return { success: false, message: msg };
     }
   }
 }
