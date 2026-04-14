@@ -110,41 +110,62 @@ export class TransactionsService {
 
   // ─── GET /transactions?month=5&year=2026 ─────────────────────────────────────
 
-  async findByMonth(month: number, year: number, page: number, limit: number) {
-    const skip = (page - 1) * limit;
-  
-    const [transactions, total] = await Promise.all([
-      this.prisma.transaction.findMany({
-        where: {
-          month: month,
-          year: year,
+  async findByMonth(month: number, year: number, page: number = 1, limit: number = 10) {
+    try {
+      // 1. Parametrlarni raqam ekanligini qayta tekshirish (Double-check)
+      const m = Number(month);
+      const y = Number(year);
+      const p = Math.max(1, Number(page));
+      const l = Math.max(1, Number(limit));
+
+      const skip = (p - 1) * l;
+
+      const [transactions, total] = await Promise.all([
+        this.prisma.transaction.findMany({
+          where: {
+            month: m,
+            year: y,
+          },
+          include: {
+            category: true, // Kategoriyani ham birga olib kelish (muhim)
+          },
+          orderBy: {
+            date: 'desc',
+          },
+          skip: skip,
+          take: l,
+        }),
+        this.prisma.transaction.count({
+          where: {
+            month: m,
+            year: y,
+          },
+        }),
+      ]);
+
+      const totalPages = Math.ceil(total / l);
+
+      return {
+        success: true,
+        data: transactions,
+        meta: {
+          total,
+          page: p,
+          limit: l,
+          totalPages,
         },
-        orderBy: {
-          date: 'desc', 
-        },
-        skip: skip,
-        take: limit,
-      }),
-      this.prisma.transaction.count({
-        where: {
-          month: month,
-          year: year,
-        },
-      }),
-    ]);
-  
-    const totalPages = Math.ceil(total / limit);
-  
-    return {
-      success: true,
-      data: transactions,
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-      },
-    };
+      };
+    } catch (error: any) {
+      // Server loglarida aniq xatoni ko'rish uchun
+      console.error('Find Transactions Error:', error.message);
+      
+      // Front-endga xatoni yashirmasdan qaytarish (vaqtinchalik debugging uchun)
+      return {
+        success: false,
+        message: `Bazada xatolik: ${error.message}`,
+        data: []
+      };
+    }
   }
 
   async findRecent(month: number, year: number) {
