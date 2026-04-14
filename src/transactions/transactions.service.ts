@@ -250,6 +250,11 @@ export class TransactionsService {
         return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
       }
   
+      // 1. Bazadagi barcha mavjud kategoriyalarni bir marta o'qib olamiz (tez ishlashi uchun)
+      const existingCategories = await this.prisma.category.findMany();
+      // Nomlar bo'yicha tezkor qidirish uchun Map yaratamiz
+      const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase(), cat]));
+  
       const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
       const monthMap: Record<string, number> = {
         'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
@@ -260,48 +265,49 @@ export class TransactionsService {
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
       const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
-      const savedTransactions = []; // Saqlangan barcha ma'lumotlar uchun massiv
+      const savedTransactions = [];
+      const skippedRecords = []; // Tashlab ketilganlar statistikasi uchun
   
       for (const record of allRecords) {
         if (!record.id) continue;
   
         try {
-          // 1. Kategoriya bilan ishlash
-          const categoryName = record.category?.trim() || 'Nomalum';
-          const categoryRecord = await this.prisma.category.upsert({
-            where: { name: categoryName },
-            update: {}, 
-            create: { 
-              name: categoryName, 
-              type: record.type || 'EXPENSE' 
-            },
-          });
+          // 2. Kategoriya nomini tozalash va tekshirish
+          const sheetCatName = record.category?.trim().toLowerCase();
+          const categoryRecord = categoryMap.get(sheetCatName);
   
-          // 2. Sanani parse qilish
+          // AGAR KATEGORIYA BAZADA BO'LMASA - BU REKORDNI SAQLAMAYMIZ
+          if (!categoryRecord) {
+            this.logger.warn(`Kategoriya topilmadi, tashlab o'tildi: ${record.category}`);
+            skippedRecords.push({ id: record.id, category: record.category });
+            continue; 
+          }
+  
+          // 3. Sanani parse qilish
           const [d, m, y] = (record.date || "").split('.').map(Number);
           const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
   
-          // 3. Tranzaksiya obyektini tayyorlash
+          // 4. Tranzaksiya obyektini tayyorlash
           const transactionData = {
             date: dbDate,
             amount: Number(record.amount) || 0,
             description: record.description || '',
-            type: record.type || 'EXPENSE',
+            type: record.type || categoryRecord.type, // Bazadagi kategoriya turini olish afzal
             sheetRowId: String(record.id), 
             month: monthNum,
             year: year,
             categoryId: categoryRecord.id, 
           };
   
-          // 4. Upsert (Bazaga yozish)
+          // 5. Upsert (Bazaga yozish)
           const result = await this.prisma.transaction.upsert({
             where: { sheetRowId: String(record.id) },
             update: transactionData,
             create: transactionData,
-            include: { category: true } // Kategoriya ma'lumotini ham qo'shib olish
+            include: { category: true }
           });
   
-          savedTransactions.push(result); // Natijani massivga qo'shish
+          savedTransactions.push(result);
   
         } catch (innerError) {
           this.logger.error(`Qator yozishda xato [ID: ${record.id}]: ${innerError}`);
@@ -309,16 +315,16 @@ export class TransactionsService {
         }
       }
   
-      // 5. To'liq ma'lumot bilan javob qaytarish
       return {
         success: true,
-        message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
+        message: `${monthName} sinxronizatsiya yakunlandi`,
         stats: {
-          total: allRecords.length,
-          processed: savedTransactions.length
+          total_in_sheets: allRecords.length,
+          saved_count: savedTransactions.length,
+          skipped_count: skippedRecords.length
         },
-        // Bazaga saqlangan hamma narsa shu yerda qaytadi
-        data: savedTransactions 
+        data: savedTransactions,
+        skipped: skippedRecords // Qaysi qatorlar kirmay qolganini ko'rish uchun
       };
   
     } catch (error: unknown) {
