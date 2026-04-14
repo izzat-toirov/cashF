@@ -7,21 +7,28 @@ export class SyncController {
 
   constructor(private readonly syncService: SyncService) {}
 
-  // Manual trigger: POST /sync/:monthName
-  @Post(':monthName')
-  async syncMonth(@Param('monthName') monthName: string) {
-    return this.syncService.syncMonthToDatabase(monthName);
-  }
+  @Post('webhook') // 1. Bu har doim tepada tursin
+  async handleWebhook(@Body() body: any) { // Body'ni 'any' qilib tekshiramiz
+    this.logger.log(`Webhook keldi. Body: ${JSON.stringify(body)}`);
 
-  // Webhook: Google Sheets Apps Script shu endpointga POST qiladi
-  @Post('webhook')
-  async handleWebhook(@Body() body: { monthName: string }) {
-    this.logger.log(`Webhook keldi: ${body.monthName}`);
+    // Google Sheets Apps Script odatda 'monthName' kaliti bilan yuboradi
+    const month = body?.monthName;
 
-    if (!body.monthName) {
-      return { success: false, message: 'monthName majburiy' };
+    if (!month || month === 'webhook') {
+      return { 
+        success: false, 
+        message: "O'y nomi (monthName) topilmadi yoki xato" 
+      };
     }
 
-    return this.syncService.syncMonthToDatabase(body.monthName);
+    return this.syncService.syncMonthToDatabase(month);
+  }
+  
+  @Post(':monthName') // 2. Dinamik parametr pastda
+  async syncMonth(@Param('monthName') monthName: string) {
+    if (monthName === 'webhook') {
+        return { success: false, message: "Noto'g'ri parametr" };
+    }
+    return this.syncService.syncMonthToDatabase(monthName);
   }
 }
