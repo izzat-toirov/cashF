@@ -250,77 +250,70 @@ export class TransactionsService {
         return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
       }
   
-      // 1. "Nomalum" kategoriyasini tayyorlab olamiz (agar Sheets'da topilmasa ishlatish uchun)
-      const unknownCategory = await this.prisma.category.upsert({
-        where: { name: 'Nomalum' },
-        update: {},
-        create: { name: 'Nomalum', type: 'EXPENSE' }
-      });
+      // 1. "Nomalum" va mavjud kategoriyalarni parallel yuklash
+      const [unknownCategory, existingCategories] = await Promise.all([
+        this.prisma.category.upsert({
+          where: { name: 'Nomalum' },
+          update: {},
+          create: { name: 'Nomalum', type: 'EXPENSE' }
+        }),
+        this.prisma.category.findMany()
+      ]);
   
-      const existingCategories = await this.prisma.category.findMany();
       const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase().trim(), cat]));
-  
       const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
+      
+      // Oy va yilni hisoblash
       const monthMap: Record<string, number> = {
         'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
         'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
       };
-  
       const parts = monthName.split(' ');
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
       const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
-      const savedTransactions = [];
-  
-      for (const record of allRecords) {
-        if (!record.id) continue;
+      // 2. Barcha so'rovlarni massivga yig'amiz (Parallel yuborish uchun)
+      const syncPromises = allRecords.map(async (record) => {
+        if (!record.id) return null;
   
         try {
-          // 2. Kategoriya tekshiruvi
           const sheetCatName = record.category?.toLowerCase().trim() || '';
-          let categoryRecord = categoryMap.get(sheetCatName);
+          let categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
   
-          // Agar kategoriya topilmasa, uni "Nomalum"ga biriktiramiz
-          if (!categoryRecord) {
-            categoryRecord = unknownCategory;
-            this.logger.warn(`Kategoriya topilmadi [${record.category}], 'Nomalum'ga biriktirildi. ID: ${record.id}`);
-          }
-  
-          // 3. Sanani parse qilish
           const [d, m, y] = (record.date || "").split('.').map(Number);
           const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
   
-          // 4. Tranzaksiya ma'lumotlari (HAMMA MAYDONLAR)
           const transactionData = {
             date: dbDate,
             amount: Number(record.amount) || 0,
-            description: record.description || '', // Tavsif
+            description: record.description || '',
             type: record.type || categoryRecord.type,
-            sheetRowId: String(record.id), 
+            sheetRowId: String(record.id),
             month: monthNum,
             year: year,
-            categoryId: categoryRecord.id, 
+            categoryId: categoryRecord.id,
           };
   
-          // 5. Bazaga yozish
-          const result = await this.prisma.transaction.upsert({
+          // Har bir upsert endi massiv ichida parallel ketadi
+          return this.prisma.transaction.upsert({
             where: { sheetRowId: String(record.id) },
             update: transactionData,
             create: transactionData,
             include: { category: true }
           });
-  
-          savedTransactions.push(result);
-  
         } catch (innerError) {
-          this.logger.error(`Qator yozishda xato [ID: ${record.id}]: ${innerError}`);
-          continue;
+          this.logger.error(`Qator sync xatosi [ID: ${record.id}]: ${innerError}`);
+          return null;
         }
-      }
+      });
+  
+      // 3. Hammasini bir vaqtda parallel bajaramiz
+      const results = await Promise.all(syncPromises);
+      const savedTransactions = results.filter(r => r !== null);
   
       return {
         success: true,
-        message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
+        message: `${monthName} tezkor sinxronizatsiya qilindi`,
         stats: {
           total: allRecords.length,
           saved: savedTransactions.length
