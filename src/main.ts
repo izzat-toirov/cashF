@@ -62,9 +62,7 @@ async function bootstrap() {
     await app.listen(port, '0.0.0.0');
     console.log(`Ilova ishga tushdi: http://localhost:${port}`);
     console.log(`Swagger hujjatlari: http://localhost:${port}/docs`);
-  } else {
-    await app.init();
-  }
+  } 
 }
 
 bootstrap();
