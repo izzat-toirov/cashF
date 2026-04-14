@@ -260,18 +260,17 @@ export class TransactionsService {
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
       const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
-      const stats = { created: 0, updated: 0 };
+      const savedTransactions = []; // Saqlangan barcha ma'lumotlar uchun massiv
   
-      // Xatoliklarni kamaytirish uchun ma'lumotlarni ketma-ketlikda (Sequence) saqlaymiz
       for (const record of allRecords) {
         if (!record.id) continue;
   
         try {
-          // 1. Kategoriya yaratish (null safe)
+          // 1. Kategoriya bilan ishlash
           const categoryName = record.category?.trim() || 'Nomalum';
           const categoryRecord = await this.prisma.category.upsert({
             where: { name: categoryName },
-            update: {}, // Agar bo'lsa tegmaysiz
+            update: {}, 
             create: { 
               name: categoryName, 
               type: record.type || 'EXPENSE' 
@@ -282,40 +281,44 @@ export class TransactionsService {
           const [d, m, y] = (record.date || "").split('.').map(Number);
           const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
   
-          // 3. Tranzaksiya ma'lumotlari
+          // 3. Tranzaksiya obyektini tayyorlash
           const transactionData = {
             date: dbDate,
             amount: Number(record.amount) || 0,
             description: record.description || '',
-            type: record.type,
-            // record.id son bo'lsa, uni stringga o'giramiz
-            sheetRowId: record.id ? String(record.id) : null, 
+            type: record.type || 'EXPENSE',
+            sheetRowId: String(record.id), 
             month: monthNum,
             year: year,
-            // categoryRecord.id har doim string bo'lishini ta'minlaymiz
-            categoryId: String(categoryRecord.id), 
+            categoryId: categoryRecord.id, 
           };
   
-          // 4. Upsert Transaction (id bo'yicha emas, sheetRowId bo'yicha)
-          await this.prisma.transaction.upsert({
-            where: { sheetRowId: record.id.toString() },
+          // 4. Upsert (Bazaga yozish)
+          const result = await this.prisma.transaction.upsert({
+            where: { sheetRowId: String(record.id) },
             update: transactionData,
             create: transactionData,
+            include: { category: true } // Kategoriya ma'lumotini ham qo'shib olish
           });
   
-          // Statsni yangilash (oddiyroq mantiq uchun)
-          stats.created++; 
+          savedTransactions.push(result); // Natijani massivga qo'shish
+  
         } catch (innerError) {
           this.logger.error(`Qator yozishda xato [ID: ${record.id}]: ${innerError}`);
-          // Bitta qatorda xato bo'lsa, butun siklni to'xtatmaymiz
           continue;
         }
       }
   
+      // 5. To'liq ma'lumot bilan javob qaytarish
       return {
         success: true,
-        message: `${monthName} sinxronizatsiya qilindi`,
-        stats: { total: allRecords.length, processed: stats.created }
+        message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
+        stats: {
+          total: allRecords.length,
+          processed: savedTransactions.length
+        },
+        // Bazaga saqlangan hamma narsa shu yerda qaytadi
+        data: savedTransactions 
       };
   
     } catch (error: unknown) {
