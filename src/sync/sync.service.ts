@@ -72,32 +72,36 @@ export class SyncService implements OnModuleInit {
       };
       const monthNum = monthMap[monthName];
   
-      // 1. Unique kategoriyalar
+      // type ni normalize qilamiz: har qanday formatni lowercase ga
+      const normalizeType = (type: string): string => {
+        if (!type) return 'expense';
+        const t = type.toLowerCase();
+        if (t === 'income' || t === 'kirim') return 'income';
+        return 'expense';
+      };
+  
       const uniqueCategories = [...new Set(allRecords.map(r => r.category || 'Nomalum'))];
   
-      // 2. Kategoriyalar va mavjud transaksiyalarni PARALLEL olamiz
+      // Kategoriyalar va mavjud transaksiyalar PARALLEL
       const [categoryRecords, existingTxns] = await Promise.all([
-        // Kategoriyalarni upsert qilib, bir query da qaytaramiz
         Promise.all(
           uniqueCategories.map(name =>
             this.prisma.category.upsert({
               where: { name },
               update: {},
-              create: { name, type: 'EXPENSE' },
+              create: { name, type: 'expense' }, // lowercase
             })
           )
         ),
-        // Mavjud transaksiyalar
         this.prisma.transaction.findMany({
           where: { sheetRowId: { in: allRecords.map(r => String(r.id)) } },
-          select: { id: true, sheetRowId: true }, // Faqat kerakli fieldlar
+          select: { id: true, sheetRowId: true },
         }),
       ]);
   
       const categoryMap = new Map(categoryRecords.map(c => [c.name, c.id]));
       const existingMap = new Map(existingTxns.map(t => [t.sheetRowId, t.id]));
   
-      // 3. Create/update ga ajratish
       const toCreate: any[] = [];
       const toUpdate: { id: string; data: any }[] = [];
   
@@ -112,7 +116,7 @@ export class SyncService implements OnModuleInit {
           date: dbDate,
           amount: Number(record.amount) || 0,
           description: record.description || '',
-          type: record.type,
+          type: normalizeType(record.type), // normalize
           sheetRowId,
           month: monthNum,
           year: currentYear,
@@ -126,33 +130,34 @@ export class SyncService implements OnModuleInit {
         }
       }
   
-      // 4. pgBouncer bilan muvofiqlashtirilgan: $transaction o'rniga Promise.all
-      // (pgBouncer transaction mode bilan $transaction muammo qilishi mumkin)
+      // pgBouncer uchun: update'larni 5 tadan batch qilamiz
+      const updateBatchSize = 5;
+  
       await Promise.all([
         toCreate.length > 0
           ? this.prisma.transaction.createMany({ data: toCreate, skipDuplicates: true })
           : Promise.resolve(),
-        ...toUpdate.map(({ id, data }) =>
-          this.prisma.transaction.update({ where: { id }, data })
-        ),
+  
+        (async () => {
+          for (let i = 0; i < toUpdate.length; i += updateBatchSize) {
+            const batch = toUpdate.slice(i, i + updateBatchSize);
+            await Promise.all(
+              batch.map(({ id, data }) =>
+                this.prisma.transaction.update({ where: { id }, data })
+              )
+            );
+          }
+        })(),
       ]);
   
-      // 5. Natijani category bilan birga qaytarish (bitta query)
+      // Natijani qaytarish
       const syncedRecords = await this.prisma.transaction.findMany({
         where: {
           sheetRowId: { in: allRecords.map(r => String(r.id)) },
         },
-        include: {
-          category: true,
-        },
+        include: { category: true },
         orderBy: { date: 'asc' },
       });
-  
-      // 6. expenses va incomes ga ajratib qaytarish
-      const result = {
-        expenses: syncedRecords.filter(r => r.type === 'EXPENSE'),
-        incomes: syncedRecords.filter(r => r.type === 'INCOME'),
-      };
   
       return {
         success: true,
@@ -162,7 +167,10 @@ export class SyncService implements OnModuleInit {
           createdCount: toCreate.length,
           updatedCount: toUpdate.length,
         },
-        data: result,
+        data: {
+          expenses: syncedRecords.filter(r => r.type === 'expense'),
+          incomes: syncedRecords.filter(r => r.type === 'income'),
+        },
       };
   
     } catch (error: unknown) {
