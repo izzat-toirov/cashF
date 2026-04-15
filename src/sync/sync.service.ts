@@ -46,26 +46,23 @@ export class SyncService implements OnModuleInit {
     ];
   
     if (!monthName || !validMonths.includes(monthName)) {
-      this.logger.warn(`Noto'g'ri oy nomi bilan so'rov keldi: ${monthName}`);
-      return { 
-        success: false, 
-        message: `Yaroqsiz oy nomi: ${monthName}.` 
-      };
+      this.logger.warn(`Noto'g'ri oy nomi: ${monthName}`);
+      return { success: false, message: `Yaroqsiz oy nomi: ${monthName}.` };
     }
   
     try {
       const data = await this.sheetsService.getFullMonthData(monthName);
-      
       if (!data) {
-        return { success: false, message: `${monthName} listi topilmadi yoki bo'sh` };
+        return { success: false, message: `${monthName} listi topilmadi` };
       }
   
-      const expenses = data.expenses || [];
-      const incomes = data.incomes || [];
-      const allRecords = [...expenses, ...incomes];
+      const allRecords = [
+        ...(data.expenses || []),
+        ...(data.incomes || []),
+      ].filter(r => r.id); // id yo'qlarni darhol olib tashlaymiz
   
       if (allRecords.length === 0) {
-        return { success: true, message: `${monthName} oyida ma'lumotlar mavjud emas`, data: [] };
+        return { success: true, message: `${monthName} oyida ma'lumotlar yo'q`, data: [] };
       }
   
       const currentYear = new Date().getFullYear();
@@ -73,82 +70,86 @@ export class SyncService implements OnModuleInit {
         'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
         'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
       };
-      
       const monthNum = monthMap[monthName];
-      const createdItems = [];
-      const updatedItems = [];
+  
+      // 1. Barcha unique kategoriyalarni BIR MARTA upsert qilamiz
+      const uniqueCategories = [...new Set(allRecords.map(r => r.category || 'Nomalum'))];
+      
+      await this.prisma.$transaction(
+        uniqueCategories.map(name =>
+          this.prisma.category.upsert({
+            where: { name },
+            update: {},
+            create: { name, type: 'EXPENSE' },
+          })
+        )
+      );
+  
+      // 2. Kategoriyalarni map'ga yuklaymiz (keyingi so'rovlarsiz ishlatish uchun)
+      const categoryRecords = await this.prisma.category.findMany({
+        where: { name: { in: uniqueCategories } },
+      });
+      const categoryMap = new Map(categoryRecords.map(c => [c.name, c.id]));
+  
+      // 3. Mavjud transaksiyalarni BIR MARTA olamiz
+      const sheetRowIds = allRecords.map(r => String(r.id));
+      const existingTxns = await this.prisma.transaction.findMany({
+        where: { sheetRowId: { in: sheetRowIds } },
+      });
+      const existingMap = new Map(existingTxns.map(t => [t.sheetRowId, t.id]));
+  
+      // 4. Recordlarni create/update ga ajratamiz
+      const toCreate = [];
+      const toUpdate = [];
   
       for (const record of allRecords) {
-        if (!record.id) continue;
-  
-        // Kategoriya upsert
-        const categoryRecord = await this.prisma.category.upsert({
-          where: { name: record.category || 'Nomalum' },
-          update: {},
-          create: { 
-            name: record.category || 'Nomalum', 
-            type: record.type || 'EXPENSE' 
-          },
-        });
-  
-        const existing = await this.prisma.transaction.findUnique({
-          where: { sheetRowId: String(record.id) },
-        });
-  
+        const sheetRowId = String(record.id);
+        const categoryId = categoryMap.get(record.category || 'Nomalum');
         const dateParts = record.date?.split('.') || [];
-        const dbDate = (dateParts.length === 3) 
-          ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0]) 
+        const dbDate = dateParts.length === 3
+          ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
           : new Date();
   
-        const transactionData = {
+        const txData = {
           date: dbDate,
           amount: Number(record.amount) || 0,
           description: record.description || '',
           type: record.type,
-          sheetRowId: String(record.id),
+          sheetRowId,
           month: monthNum,
           year: currentYear,
-          categoryId: categoryRecord.id,
+          categoryId,
         };
   
-        if (existing) {
-          const updated = await this.prisma.transaction.update({
-            where: { id: existing.id },
-            data: transactionData,
-            include: { category: true } // Kategoriya ma'lumotlarini ham qo'shib olish
-          });
-          updatedItems.push(updated);
+        if (existingMap.has(sheetRowId)) {
+          toUpdate.push({ id: existingMap.get(sheetRowId), data: txData });
         } else {
-          const created = await this.prisma.transaction.create({
-            data: transactionData,
-            include: { category: true }
-          });
-          createdItems.push(created);
+          toCreate.push(txData);
         }
       }
   
-      // NATIJA: Faqat sonlar emas, barcha ob'ektlar qaytadi
+      // 5. Bulk create + parallel update — hammasi bir vaqtda
+      const [createdResult, ...updatedResults] = await this.prisma.$transaction([
+        this.prisma.transaction.createMany({ data: toCreate, skipDuplicates: true }),
+        ...toUpdate.map(({ id, data }) =>
+          this.prisma.transaction.update({ where: { id }, data })
+        ),
+      ]);
+  
       return {
         success: true,
         message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi`,
         stats: {
           total: allRecords.length,
-          createdCount: createdItems.length,
-          updatedCount: updatedItems.length,
+          createdCount: toCreate.length,
+          updatedCount: toUpdate.length,
         },
-        data: {
-          new_records: createdItems,    // Yangi qo'shilganlar ro'yxati
-          updated_records: updatedItems // Yangilanganlar ro'yxati
-        }
       };
   
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Sync xatoligi [${monthName}]: ${msg}`);
-      return { 
-        success: false, 
-        message: `Xatolik: ${msg}` 
-      };
+      return { success: false, message: `Xatolik: ${msg}` };
     }
-}
+  }
 }
