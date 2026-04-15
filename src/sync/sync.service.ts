@@ -59,7 +59,7 @@ export class SyncService implements OnModuleInit {
       const allRecords = [
         ...(data.expenses || []),
         ...(data.incomes || []),
-      ].filter(r => r.id); // id yo'qlarni darhol olib tashlaymiz
+      ].filter(r => r.id);
   
       if (allRecords.length === 0) {
         return { success: true, message: `${monthName} oyida ma'lumotlar yo'q`, data: [] };
@@ -72,39 +72,37 @@ export class SyncService implements OnModuleInit {
       };
       const monthNum = monthMap[monthName];
   
-      // 1. Barcha unique kategoriyalarni BIR MARTA upsert qilamiz
+      // 1. Unique kategoriyalar
       const uniqueCategories = [...new Set(allRecords.map(r => r.category || 'Nomalum'))];
-      
-      await this.prisma.$transaction(
-        uniqueCategories.map(name =>
-          this.prisma.category.upsert({
-            where: { name },
-            update: {},
-            create: { name, type: 'EXPENSE' },
-          })
-        )
-      );
   
-      // 2. Kategoriyalarni map'ga yuklaymiz (keyingi so'rovlarsiz ishlatish uchun)
-      const categoryRecords = await this.prisma.category.findMany({
-        where: { name: { in: uniqueCategories } },
-      });
+      // 2. Kategoriyalar va mavjud transaksiyalarni PARALLEL olamiz
+      const [categoryRecords, existingTxns] = await Promise.all([
+        // Kategoriyalarni upsert qilib, bir query da qaytaramiz
+        Promise.all(
+          uniqueCategories.map(name =>
+            this.prisma.category.upsert({
+              where: { name },
+              update: {},
+              create: { name, type: 'EXPENSE' },
+            })
+          )
+        ),
+        // Mavjud transaksiyalar
+        this.prisma.transaction.findMany({
+          where: { sheetRowId: { in: allRecords.map(r => String(r.id)) } },
+          select: { id: true, sheetRowId: true }, // Faqat kerakli fieldlar
+        }),
+      ]);
+  
       const categoryMap = new Map(categoryRecords.map(c => [c.name, c.id]));
-  
-      // 3. Mavjud transaksiyalarni BIR MARTA olamiz
-      const sheetRowIds = allRecords.map(r => String(r.id));
-      const existingTxns = await this.prisma.transaction.findMany({
-        where: { sheetRowId: { in: sheetRowIds } },
-      });
       const existingMap = new Map(existingTxns.map(t => [t.sheetRowId, t.id]));
   
-      // 4. Recordlarni create/update ga ajratamiz
-      const toCreate = [];
-      const toUpdate = [];
+      // 3. Create/update ga ajratish
+      const toCreate: any[] = [];
+      const toUpdate: { id: string; data: any }[] = [];
   
       for (const record of allRecords) {
         const sheetRowId = String(record.id);
-        const categoryId = categoryMap.get(record.category || 'Nomalum');
         const dateParts = record.date?.split('.') || [];
         const dbDate = dateParts.length === 3
           ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
@@ -118,23 +116,43 @@ export class SyncService implements OnModuleInit {
           sheetRowId,
           month: monthNum,
           year: currentYear,
-          categoryId,
+          categoryId: categoryMap.get(record.category || 'Nomalum'),
         };
   
         if (existingMap.has(sheetRowId)) {
-          toUpdate.push({ id: existingMap.get(sheetRowId), data: txData });
+          toUpdate.push({ id: existingMap.get(sheetRowId)!, data: txData });
         } else {
           toCreate.push(txData);
         }
       }
   
-      // 5. Bulk create + parallel update — hammasi bir vaqtda
-      const [createdResult, ...updatedResults] = await this.prisma.$transaction([
-        this.prisma.transaction.createMany({ data: toCreate, skipDuplicates: true }),
+      // 4. pgBouncer bilan muvofiqlashtirilgan: $transaction o'rniga Promise.all
+      // (pgBouncer transaction mode bilan $transaction muammo qilishi mumkin)
+      await Promise.all([
+        toCreate.length > 0
+          ? this.prisma.transaction.createMany({ data: toCreate, skipDuplicates: true })
+          : Promise.resolve(),
         ...toUpdate.map(({ id, data }) =>
           this.prisma.transaction.update({ where: { id }, data })
         ),
       ]);
+  
+      // 5. Natijani category bilan birga qaytarish (bitta query)
+      const syncedRecords = await this.prisma.transaction.findMany({
+        where: {
+          sheetRowId: { in: allRecords.map(r => String(r.id)) },
+        },
+        include: {
+          category: true,
+        },
+        orderBy: { date: 'asc' },
+      });
+  
+      // 6. expenses va incomes ga ajratib qaytarish
+      const result = {
+        expenses: syncedRecords.filter(r => r.type === 'EXPENSE'),
+        incomes: syncedRecords.filter(r => r.type === 'INCOME'),
+      };
   
       return {
         success: true,
@@ -144,6 +162,7 @@ export class SyncService implements OnModuleInit {
           createdCount: toCreate.length,
           updatedCount: toUpdate.length,
         },
+        data: result,
       };
   
     } catch (error: unknown) {
