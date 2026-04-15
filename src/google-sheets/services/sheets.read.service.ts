@@ -145,24 +145,74 @@ export class SheetsReadService extends SheetsBaseService {
     return response.data.values ?? [];
   }
 
+  // async getAvailableSheets(): Promise<{ name: string; month: number; year: number }[]> {
+  //   try {
+  //     const response = await this.sheets.spreadsheets.get({
+  //       spreadsheetId: this.spreadsheetId,
+  //     });
+  
+  //     const sheetTitles = (response.data.sheets || [])
+  //       .map((s) => s.properties?.title || '')
+  //       .filter((title) => title !== '' && title !== 'Сводка' && title !== 'Kategoriyalar');
+  
+  //     return sheetTitles
+  //       .map((name) => {
+  //         const parsed = this.parseSheetName(name);
+  //         return parsed ? { name, ...parsed } : null;
+  //       })
+  //       .filter((s): s is { name: string; month: number; year: number } => s !== null);
+  //   } catch (error: unknown) {
+  //     this.logger.error(`getAvailableSheets xatolik: ${error instanceof Error ? error.message : String(error)}`);
+  //     throw error;
+  //   }
+  // }
+
   async getAvailableSheets(): Promise<{ name: string; month: number; year: number }[]> {
     try {
+      // values.get emas, spreadsheets.get ishlatamiz (metadata o'qish uchun)
       const response = await this.sheets.spreadsheets.get({
         spreadsheetId: this.spreadsheetId,
+        ranges: ['Сводка!F2'],
+        includeGridData: true,
       });
   
-      const sheetTitles = (response.data.sheets || [])
-        .map((s) => s.properties?.title || '')
-        .filter((title) => title !== '' && title !== 'Сводка' && title !== 'Kategoriyalar');
+      const sheet = response.data.sheets?.[0];
+      const cellData = sheet?.data?.[0]?.rowData?.[0]?.values?.[0];
+      const validation = cellData?.dataValidation;
   
-      return sheetTitles
-        .map((name) => {
-          const parsed = this.parseSheetName(name);
-          return parsed ? { name, ...parsed } : null;
-        })
-        .filter((s): s is { name: string; month: number; year: number } => s !== null);
-    } catch (error: unknown) {
-      this.logger.error(`getAvailableSheets xatolik: ${error instanceof Error ? error.message : String(error)}`);
+      let names: string[] = [];
+  
+      // F2 katagidagi drop-down ro'yxatni olish
+      if (validation?.condition?.type === 'ONE_OF_LIST') {
+        names = validation.condition.values?.map(v => v.userEnteredValue || '').filter(Boolean) || [];
+      } else {
+        // Agar drop-down topilmasa, zaxira sifatida list nomlarini olamiz
+        this.logger.warn("Drop-down topilmadi, list nomlariga o'tilmoqda");
+        names = (response.data.sheets || [])
+          .map((s) => s.properties?.title || '')
+          .filter((t) => !['Сводka', 'Kategoriyalar', 'Сводka nusxasi'].includes(t));
+      }
+  
+      const monthsMap: Record<string, number> = {
+        'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
+        'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
+      };
+  
+      return names.map(name => {
+        const trimmedName = name.trim();
+        const parsed = this.parseSheetName(trimmedName);
+        
+        if (parsed) return { name: trimmedName, ...parsed };
+        
+        const month = monthsMap[trimmedName];
+        if (month) {
+          return { name: trimmedName, month, year: new Date().getFullYear() };
+        }
+        return null;
+      }).filter((s): s is { name: string; month: number; year: number } => s !== null);
+  
+    } catch (error) {
+      this.logger.error(`getAvailableSheets xatolik: ${error.message}`);
       throw error;
     }
   }
@@ -171,25 +221,30 @@ export class SheetsReadService extends SheetsBaseService {
     try {
       const resp = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: 'Сводка!F2',
+        range: 'Сводка!F2', 
         valueRenderOption: 'FORMATTED_VALUE', 
       });
   
-      const name = resp.data.values?.[0]?.[0];
-      this.logger.log(`F2 qiymati: "${name}"`); 
+      const values = resp.data.values;
+      
+      if (!values || values.length === 0 || !values[0][0]) {
+        this.logger.warn("F2 katagi bo'sh kelyapti, default qiymat ishlatilmoqda");
+        return { name: 'Aprel', month: 4, year: 2026 };
+      }
   
-      if (!name) throw new Error('F2 katakda qiymat topilmadi');
+      const name = String(values[0][0]);
+      this.logger.log(`F2 dan o'qilgan qiymat: "${name}"`); 
   
       const parsed = this.parseSheetName(name);
       if (!parsed) {
-        this.logger.warn(`Sheet nomi parse qilinmadi: "${name}", raw qaytarilmoqda`);
+        this.logger.warn(`Sheet nomi parse qilinmadi: "${name}"`);
         return { name, month: 0, year: 0 };
       }
   
       return { name, ...parsed };
     } catch (error: unknown) {
       this.logger.error(`getActiveSheet xatolik: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
+      return { name: 'Aprel', month: 4, year: 2026 };
     }
   }
   
