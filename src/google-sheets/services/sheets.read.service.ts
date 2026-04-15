@@ -4,10 +4,11 @@ import { sheets_v4 } from 'googleapis';
 import { FinanceRecord, SheetData, SvodkaData } from '../../common/types/finance.types';
 import { SHEET_CONSTANTS } from '../../common/constants/sheets.constants';
 import { SheetsBaseService } from './sheets.base.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class SheetsReadService extends SheetsBaseService {
-  constructor(configService: ConfigService) {
+  constructor(configService: ConfigService, private readonly prisma: PrismaService) {
     super(configService);
   }
 
@@ -169,7 +170,6 @@ export class SheetsReadService extends SheetsBaseService {
 
   async getAvailableSheets(): Promise<{ name: string; month: number; year: number }[]> {
     try {
-      // values.get emas, spreadsheets.get ishlatamiz (metadata o'qish uchun)
       const response = await this.sheets.spreadsheets.get({
         spreadsheetId: this.spreadsheetId,
         ranges: ['Сводка!F2'],
@@ -182,11 +182,9 @@ export class SheetsReadService extends SheetsBaseService {
   
       let names: string[] = [];
   
-      // F2 katagidagi drop-down ro'yxatni olish
       if (validation?.condition?.type === 'ONE_OF_LIST') {
         names = validation.condition.values?.map(v => v.userEnteredValue || '').filter(Boolean) || [];
       } else {
-        // Agar drop-down topilmasa, zaxira sifatida list nomlarini olamiz
         this.logger.warn("Drop-down topilmadi, list nomlariga o'tilmoqda");
         names = (response.data.sheets || [])
           .map((s) => s.properties?.title || '')
@@ -198,12 +196,12 @@ export class SheetsReadService extends SheetsBaseService {
         'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
       };
   
-      return names.map(name => {
+      const availableSheets = names.map(name => {
         const trimmedName = name.trim();
         const parsed = this.parseSheetName(trimmedName);
-        
+  
         if (parsed) return { name: trimmedName, ...parsed };
-        
+  
         const month = monthsMap[trimmedName];
         if (month) {
           return { name: trimmedName, month, year: new Date().getFullYear() };
@@ -211,9 +209,33 @@ export class SheetsReadService extends SheetsBaseService {
         return null;
       }).filter((s): s is { name: string; month: number; year: number } => s !== null);
   
+      // ✅ DB ga saqlash — mavjud bo'lsa skip, yo'q bo'lsa upsert
+      await Promise.all(
+        availableSheets.map(({ month, year }) =>
+          this.prisma.balance.upsert({
+            where: {
+              month_year: { month, year },
+            },
+            update: {}, // mavjud bo'lsa hech narsa o'zgartirmaymiz
+            create: {
+              month,
+              year,
+              totalIncome: 0,
+              totalExpense: 0,
+              balance: 0,
+            },
+          })
+        )
+      );
+  
+      this.logger.log(`${availableSheets.length} ta oy Balance jadvaliga saqlandi`);
+  
+      return availableSheets;
+  
     } catch (error) {
-      this.logger.error(`getAvailableSheets xatolik: ${error.message}`);
-      throw error;
+      const err = error as Error;
+      this.logger.error(`getAvailableSheets xatolik: ${err.message}`);
+      throw err;
     }
   }
   

@@ -8,12 +8,13 @@ import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
 import { FinanceRecord } from '../common/types/finance.types';
 import { SHEET_CONSTANTS } from '../common/constants/sheets.constants';
 import { PrismaService } from '../prisma/prisma.service';
+import { TransactionsService } from '../transactions/transactions.service';
 
 @Injectable()
 export class FinanceService {
   private readonly logger = new Logger(FinanceService.name);
 
-  constructor(private readonly sheets: GoogleSheetsService, private readonly prisma: PrismaService) {}
+  constructor(private readonly sheets: GoogleSheetsService, private readonly prisma: PrismaService, private readonly transactionsService: TransactionsService) {}
 
   // ─── CREATE ───────────────────────────────────────────────────────────────────
 
@@ -222,7 +223,14 @@ export class FinanceService {
 
   async setActiveSheet(sheetName: string): Promise<{ success: boolean; sheetName: string }> {
     try {
-      return await this.sheets.setActiveSheet(sheetName);
+      // 1. Sheets da F2 ni o'zgartir
+      const result = await this.sheets.setActiveSheet(sheetName);
+  
+      // 2. Shu oyni DB ga sync qil
+      await this.transactionsService.syncMonthToDatabase(sheetName);
+  
+      this.logger.log(`✅ ${sheetName} sync qilindi`);
+      return result;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`setActiveSheet xatolik: ${message}`);
@@ -371,6 +379,7 @@ async getRecentRecordsFromDb(limit: number) {
     orderBy: { date: 'desc' },
   });
 }
+
 
   
 }

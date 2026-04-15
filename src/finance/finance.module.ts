@@ -6,10 +6,11 @@ import { GoogleSheetsModule } from '../google-sheets/google-sheets.module';
 import { AuthModule } from '../auth/auth.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TransactionsModule } from '../transactions/transactions.module';
+import { TransactionsService } from '../transactions/transactions.service';
 
 @Module({
   imports: [ConfigModule, GoogleSheetsModule, AuthModule, PrismaModule, TransactionsModule],
   controllers: [FinanceController],
-  providers: [FinanceService],
+  providers: [FinanceService, TransactionsService],
 })
 export class FinanceModule {}
