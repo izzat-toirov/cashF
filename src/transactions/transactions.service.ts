@@ -256,7 +256,6 @@ export class TransactionsService {
         return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
       }
   
-      // 1. "Nomalum" va mavjud kategoriyalarni parallel yuklash
       const [unknownCategory, existingCategories] = await Promise.all([
         this.prisma.category.upsert({
           where: { name: 'Nomalum' },
@@ -268,43 +267,47 @@ export class TransactionsService {
   
       const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase().trim(), cat]));
       const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
-      
-      // Oy va yilni hisoblash
+  
       const monthMap: Record<string, number> = {
         'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
         'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
       };
+  
       const parts = monthName.split(' ');
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
-      const year = parts[1] ? parseInt(parts[1]) : new Date().getFullYear();
   
-      // 2. Barcha so'rovlarni massivga yig'amiz (Parallel yuborish uchun)
       const syncPromises = allRecords.map(async (record) => {
         if (!record.id) return null;
   
         try {
           const sheetCatName = record.category?.toLowerCase().trim() || '';
-          let categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
+          const categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
   
+          // ✅ Yilni tranzaksiya sanasidan olamiz
           const [d, m, y] = (record.date || "").split('.').map(Number);
           const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
+          
+          // ✅ Yilni sanadan aniqlaymiz, bo'lmasa joriy yil
+          const resolvedYear = (y && y > 2000) ? y : new Date().getFullYear();
+  
+          // ✅ sheetRowId = "oy-yil-id" — har oy uchun unique
+          const uniqueSheetRowId = `${monthNum}-${resolvedYear}-${String(record.id)}`;
   
           const transactionData = {
             date: dbDate,
             amount: Number(record.amount) || 0,
             description: record.description || '',
             type: record.type || categoryRecord.type,
-            sheetRowId: String(record.id),
+            sheetRowId: uniqueSheetRowId,
             month: monthNum,
-            year: year,
+            year: resolvedYear,
             categoryId: categoryRecord.id,
           };
   
-          // Har bir upsert endi massiv ichida parallel ketadi
           return this.prisma.transaction.upsert({
-            where: { sheetRowId: String(record.id) },
-            update: transactionData,
-            create: transactionData,
+            where: { sheetRowId: uniqueSheetRowId },
+            update: transactionData,  // mavjud bo'lsa yangilaydi, o'chirmaydi
+            create: transactionData,  // yo'q bo'lsa yaratadi
             include: { category: true }
           });
         } catch (innerError) {
@@ -313,13 +316,12 @@ export class TransactionsService {
         }
       });
   
-      // 3. Hammasini bir vaqtda parallel bajaramiz
       const results = await Promise.all(syncPromises);
       const savedTransactions = results.filter(r => r !== null);
   
       return {
         success: true,
-        message: `${monthName} tezkor sinxronizatsiya qilindi`,
+        message: `${monthName} sinxronizatsiya qilindi`,
         stats: {
           total: allRecords.length,
           saved: savedTransactions.length
