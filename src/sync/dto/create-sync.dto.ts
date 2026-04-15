@@ -1,12 +1,24 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator'; // Shuni qo'shing
+import { IsString, IsNumber, IsOptional, IsArray } from 'class-validator';
 
 export class SyncWebhookDto {
-  @ApiProperty({ 
-    example: 'Aprel', 
-    description: 'Sinxronizatsiya qilinadigan oy nomi' 
-  })
-  @IsString()      // Validatsiya uchun shart
-  @IsNotEmpty()    // Bo'sh bo'lmasligi uchun
+  @IsString()
   monthName: string;
+
+  @IsOptional()
+  @IsNumber()
+  row?: number;
+
+  @IsOptional()
+  @IsNumber()
+  column?: number;
+
+  @IsOptional()
+  newValue?: any;
+
+  @IsOptional()
+  oldValue?: any;
+
+  @IsOptional()
+  @IsArray()
+  rowData?: any[];
 }
