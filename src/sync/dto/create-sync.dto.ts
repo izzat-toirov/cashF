@@ -9,16 +9,10 @@ export class SyncWebhookDto {
   row?: number;
 
   @IsOptional()
-  @IsNumber()
-  column?: number;
-
-  @IsOptional()
-  newValue?: any;
-
-  @IsOptional()
-  oldValue?: any;
-
-  @IsOptional()
   @IsArray()
   rowData?: any[];
+
+  @IsOptional()
+  @IsString()
+  type?: string; // Enum xatosi bermasligi uchun string qildik
 }

@@ -16,7 +16,7 @@ export class SyncService implements OnModuleInit {
     this.startPolling(60_000);
   }
 
-  // ✅ ID yaratish uchun yagona standart funksiya (Dublikat oldini olish uchun eng muhimi)
+  // ✅ ID yaratish: Apps Script va Polling uchun bir xil format
   private generateSheetRowId(month: string, row: number | string, type: string): string {
     return `${month}-2026-${type.toLowerCase()}-row-${row}`;
   }
@@ -27,7 +27,7 @@ export class SyncService implements OnModuleInit {
       const month = monthMap[new Date().getMonth()];
       try {
         await this.syncMonthToDatabase(month);
-      } catch (e) {
+      } catch (e: any) { // 'unknown' xatosini 'any' bilan yopamiz
         this.logger.error(`Polling xatosi: ${e.message}`);
       }
     }, intervalMs);
@@ -36,18 +36,19 @@ export class SyncService implements OnModuleInit {
   /**
    * WEBHOOK: Apps Scriptdan kelgan bitta qatorni sinxronlash
    */
-  async syncSingleRow(dto: any) {
-    const { monthName, rowData, row, type } = dto; // Apps Scriptdan 'type' ham keladi (EXPENSE/INCOME)
+  async syncSingleRow(dto: SyncWebhookDto) {
+    const { monthName, rowData, row, type } = dto;
 
-    if (!rowData || rowData.length < 4) {
+    if (!rowData || rowData.length < 4 || !row) {
       return { success: false, message: "Ma'lumotlar yetarli emas" };
     }
 
     try {
-      // Apps Script yuborayotgan massiv: [date, amount, category, description, type]
+      // rowData: [date, amount, category, description, type]
       const [dateStr, amount, categoryName, description, rowType] = rowData;
       
-      const transactionType = (rowType || type || 'EXPENSE').toLowerCase();
+      // Ustuvorlik: rowData[4] -> dto.type -> 'expense'
+      const transactionType = (rowType || type || 'expense').toLowerCase();
       const sheetRowId = this.generateSheetRowId(monthName, row, transactionType);
 
       const dateParts = String(dateStr).split('.');
@@ -55,20 +56,20 @@ export class SyncService implements OnModuleInit {
         ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
         : new Date();
 
-      // 1. Kategoriyani topish yoki yaratish
+      // 1. Kategoriyani UPSERT
       const category = await this.prisma.category.upsert({
         where: { name: categoryName || 'Nomalum' },
         update: {},
         create: { name: categoryName || 'Nomalum', type: transactionType }
       });
 
-      // 2. Transaksiyani UPSERT qilish
+      // 2. Transaksiyani UPSERT
       const txData = {
         date: dbDate,
-        amount: Number(amount) || 0,
+        amount: Number(String(amount).replace(/\s/g, '')) || 0,
         description: String(description || ''),
         type: transactionType,
-        month: new Date(dbDate).getMonth() + 1,
+        month: dbDate.getMonth() + 1,
         year: 2026,
         categoryId: category.id,
         sheetRowId: sheetRowId
@@ -80,8 +81,8 @@ export class SyncService implements OnModuleInit {
         create: txData
       });
 
-      return { success: true, message: "Muvaffaqiyatli yangilandi", data: result };
-    } catch (error) {
+      return { success: true, message: "Yangilandi", data: result };
+    } catch (error: any) {
       this.logger.error(`Single row error: ${error.message}`);
       return { success: false, message: error.message };
     }
@@ -101,8 +102,8 @@ export class SyncService implements OnModuleInit {
       ].filter(r => r.id);
 
       for (const record of allRecords) {
-        // ✅ Webhook bilan bir xil ID generatsiya qilinadi
-        const sheetRowId = this.generateSheetRowId(monthName, record.id, record.type);
+        const transactionType = record.type.toLowerCase();
+        const sheetRowId = this.generateSheetRowId(monthName, record.id, transactionType);
         
         const dateParts = record.date?.split('.') || [];
         const dbDate = dateParts.length === 3
@@ -112,14 +113,14 @@ export class SyncService implements OnModuleInit {
         const category = await this.prisma.category.upsert({
           where: { name: record.category || 'Nomalum' },
           update: {},
-          create: { name: record.category || 'Nomalum', type: record.type }
+          create: { name: record.category || 'Nomalum', type: transactionType }
         });
 
         const txData = {
           date: dbDate,
-          amount: Number(record.amount) || 0,
+          amount: Number(String(record.amount).replace(/\s/g, '')) || 0,
           description: record.description || '',
-          type: record.type,
+          type: transactionType,
           month: dbDate.getMonth() + 1,
           year: 2026,
           categoryId: category.id,
@@ -133,7 +134,7 @@ export class SyncService implements OnModuleInit {
         });
       }
       return { success: true };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Sync error: ${error.message}`);
     }
   }
