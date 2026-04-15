@@ -97,21 +97,26 @@ export class SyncService implements OnModuleInit {
    * POLLING va TO'LIQ SYNC uchun
    */
   async syncMonthToDatabase(monthName: string) {
-    // ... (Sizning mavjud tekshiruvlaringiz)
-    
     try {
       const data = await this.sheetsService.getFullMonthData(monthName);
       if (!data) return { success: false, message: `${monthName} listi topilmadi` };
-
-      // Recordlarni yig'ishda sheetRowId ni aniq biriktirish
+  
+      const monthMap: Record<string, number> = {
+        'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
+        'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
+      };
+  
+      const monthNum = monthMap[monthName] || new Date().getMonth() + 1;
+      const currentYear = new Date().getFullYear();
+  
       const allRecords = [
         ...(data.expenses || []).map(r => ({ ...r, type: 'expense' })),
         ...(data.incomes || []).map(r => ({ ...r, type: 'income' })),
       ].filter(r => r.id);
-
-      if (allRecords.length === 0) return { success: true, message: "Bo'sh" };
-
-      // 1. Kategoriyalarni bulk yaratish
+  
+      if (allRecords.length === 0) return { success: true, message: "Ma'lumot topilmadi" };
+  
+      // 1. Kategoriyalarni tayyorlash
       const uniqueCategoryNames = [...new Set(allRecords.map(r => r.category || 'Nomalum'))];
       await Promise.all(
         uniqueCategoryNames.map(name => 
@@ -122,44 +127,40 @@ export class SyncService implements OnModuleInit {
           })
         )
       );
-
+  
       const categoryRecords = await this.prisma.category.findMany();
-      const categoryMap = new Map(categoryRecords.map(c => [c.name, c.id]));
-
+      const categoryMap = new Map(categoryRecords.map(c => [c.name.toLowerCase().trim(), c.id]));
+  
       // 2. Transaksiyalarni UPSERT qilish
-      let created = 0;
-      let updated = 0;
-
       for (const record of allRecords) {
-        const sheetRowId = String(record.id);
+        // ✅ MUHIM: sheetRowId formatini Apps Script bilan bir xil qilamiz
+        // Format: "Mart-2026-expense-row-5"
+        const sheetRowId = `${monthName}-${currentYear}-${record.id}`;
         
-        // Sana parsing
         const dateParts = record.date?.split('.') || [];
         const dbDate = dateParts.length === 3
           ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
           : new Date();
-
+  
         const txData = {
           date: dbDate,
           amount: Number(record.amount) || 0,
           description: record.description || '',
           type: record.type,
           sheetRowId,
-          month: 3, // yoki dinamik
-          year: 2026,
-          categoryId: categoryMap.get(record.category || 'Nomalum'),
+          month: monthNum,
+          year: currentYear,
+          categoryId: categoryMap.get(String(record.category || 'Nomalum').toLowerCase().trim()),
         };
-
+  
         await this.prisma.transaction.upsert({
-          where: { sheetRowId },
-          update: txData,
-          create: txData
+          where: { sheetRowId }, // @unique indeks orqali tekshiradi
+          update: txData,        // Mavjud bo'lsa yangilaydi (dublikat bo'lmaydi)
+          create: txData         // Yo'q bo'lsa yaratadi
         });
-        
-        // Bu yerda counterlarni oshirish mumkin (ixtiyoriy)
       }
-
-      return { success: true, message: "Sinxronizatsiya yakunlandi" };
+  
+      return { success: true, message: `${monthName} muvaffaqiyatli sinxronizatsiya qilindi` };
     } catch (error) {
       this.logger.error(`Sync xatosi: ${error.message}`);
       return { success: false, message: error.message };

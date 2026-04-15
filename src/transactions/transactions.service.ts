@@ -109,15 +109,16 @@ export class TransactionsService {
   }
 
 
-  async findByMonth(month: number, year: number, page: number = 1, limit: number = 10) {
+  async findByMonth(month: number, year: number, page: number = 1, limit: number = 80) {
     try {
-      const m = Number(month);
-      const y = Number(year);
-      const p = Math.max(1, Number(page));
-      const l = Math.max(1, Number(limit));
-
+      // Son ekanligiga ishonch hosil qilamiz
+      const m = parseInt(String(month));
+      const y = parseInt(String(year));
+      const p = Math.max(1, parseInt(String(page)));
+      const l = Math.max(1, parseInt(String(limit)));
+  
       const skip = (p - 1) * l;
-
+  
       const [transactions, total] = await Promise.all([
         this.prisma.transaction.findMany({
           where: {
@@ -127,9 +128,10 @@ export class TransactionsService {
           include: {
             category: true,
           },
-          orderBy: {
-            date: 'desc',
-          },
+          orderBy: [
+            { date: 'desc' }, // Avval sana bo'yicha
+            { createdAt: 'desc' } // Keyin yaratilgan vaqti bo'yicha
+          ],
           skip: skip,
           take: l,
         }),
@@ -140,9 +142,7 @@ export class TransactionsService {
           },
         }),
       ]);
-
-      const totalPages = Math.ceil(total / l);
-
+  
       return {
         success: true,
         data: transactions,
@@ -150,16 +150,16 @@ export class TransactionsService {
           total,
           page: p,
           limit: l,
-          totalPages,
+          totalPages: Math.ceil(total / l),
         },
       };
     } catch (error: any) {
-      console.error('Find Transactions Error:', error.message);
-      
+      this.logger.error(`Find Transactions Error: ${error.message}`);
       return {
         success: false,
         message: `Bazada xatolik: ${error.message}`,
-        data: []
+        data: [],
+        meta: { total: 0, page: 1, limit: 80, totalPages: 0 }
       };
     }
   }
