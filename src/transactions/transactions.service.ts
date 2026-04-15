@@ -108,11 +108,9 @@ export class TransactionsService {
     return { success: true, id };
   }
 
-  // ─── GET /transactions?month=5&year=2026 ─────────────────────────────────────
 
   async findByMonth(month: number, year: number, page: number = 1, limit: number = 10) {
     try {
-      // 1. Parametrlarni raqam ekanligini qayta tekshirish (Double-check)
       const m = Number(month);
       const y = Number(year);
       const p = Math.max(1, Number(page));
@@ -127,7 +125,7 @@ export class TransactionsService {
             year: y,
           },
           include: {
-            category: true, // Kategoriyani ham birga olib kelish (muhim)
+            category: true,
           },
           orderBy: {
             date: 'desc',
@@ -156,10 +154,8 @@ export class TransactionsService {
         },
       };
     } catch (error: any) {
-      // Server loglarida aniq xatoni ko'rish uchun
       console.error('Find Transactions Error:', error.message);
       
-      // Front-endga xatoni yashirmasdan qaytarish (vaqtinchalik debugging uchun)
       return {
         success: false,
         message: `Bazada xatolik: ${error.message}`,
@@ -168,37 +164,47 @@ export class TransactionsService {
     }
   }
 
-  async findRecent(month: number, year: number) {
-    const sheetName = this.sheetsService.getSheetName(year, month);
-    const records = await this.sheetsService.getFinanceRecords(sheetName);
+  async findRecent(month: number) {
+    const now = new Date();
   
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86_400_000 - 1);
   
-    const formatDate = (d: Date): string =>
-      `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+    const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
+    const yesterdayEnd = new Date(todayStart.getTime() - 1);
   
-    const todayStr = formatDate(today);
-    const yesterdayStr = formatDate(yesterday);
+    // Bugun yoki kechagi transactionlar
+    let transactions = await this.prisma.transaction.findMany({
+      where: {
+        OR: [
+          { date: { gte: todayStart, lte: todayEnd } },
+          { date: { gte: yesterdayStart, lte: yesterdayEnd } },
+        ],
+      },
+      include: { category: true },
+      orderBy: { date: 'desc' },
+      take: 5,
+    });
   
-    const filtered = records.filter(
-      (r) => r.date === todayStr || r.date === yesterdayStr
-    );
-  
-    const sorted = [...(filtered.length > 0 ? filtered : records)]
-      .sort((a, b) => {
-        const parseDate = (str: string) => {
-          const [dd, mm, yyyy] = str.split('.');
-          return new Date(`${yyyy}-${mm}-${dd}`).getTime();
-        };
-        return parseDate(b.date) - parseDate(a.date);
-      })
-      .slice(0, 5);
+    // Topilmasa — shu oyning so'nggi 5 tasi (year avtomatik date dan olinadi)
+    if (transactions.length === 0) {
+      const currentYear = now.getFullYear();
+      transactions = await this.prisma.transaction.findMany({
+        where: {
+          date: {
+            gte: new Date(currentYear, month - 1, 1),
+            lte: new Date(currentYear, month, 0, 23, 59, 59, 999),
+          },
+        },
+        include: { category: true },
+        orderBy: { date: 'desc' },
+        take: 5,
+      });
+    }
   
     return {
       success: true,
-      data: sorted,
+      data: transactions,
     };
   }
   

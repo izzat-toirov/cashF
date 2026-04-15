@@ -38,3 +38,18 @@ model Category {
 
   @@map("category")
 }
+
+model Balance {
+  id           String   @id @default(cuid())
+  totalIncome  Float
+  totalExpense Float
+  balance      Float
+  month        Int
+  year         Int
+  updatedAt    DateTime @updatedAt
+
+  @@unique([month, year])
+  @@map("balance")
+}
+
+

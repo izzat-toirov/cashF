@@ -78,12 +78,12 @@ Daromad yoki xarajat qo'shadi. \`date\` yoki \`month\`/\`year\` dan sheet nomi a
 @ApiOperation({ summary: "So'nggi tranzaksiyalar — bugun yoki kecha" })
 findRecent(
   @Query('month') month?: string,
-  @Query('year') year?: string,
+  // @Query('year') year?: string,
 ) {
   const today = new Date();
   const m = month ? Number(month) : today.getMonth() + 1;
-  const y = year ? Number(year) : today.getFullYear();
-  return this.transactionsService.findRecent(m, y);
+  // const y = year ? Number(year) : today.getFullYear();
+  return this.transactionsService.findRecent(m);
 }
 
 
