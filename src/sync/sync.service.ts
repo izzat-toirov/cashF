@@ -117,7 +117,7 @@ export class SyncService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────────────────────
   // CRON — har 20 daqiqada noto'g'ri formatdagi yozuvlarni tozalash
   // ─────────────────────────────────────────────────────────────────────────────
-  @Cron('*/20 * * * *')
+  @Cron('*/1 * * * *')
   async cronCleanupAndValidate() {
     this.logger.log('⏰ Cron: 20 daqiqalik tekshiruv boshlandi');
 
