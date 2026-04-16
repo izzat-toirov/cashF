@@ -92,18 +92,23 @@ export class SyncService implements OnModuleInit {
       const sheetItems = [];
 
       for (const item of [...monthData.expenses, ...monthData.incomes]) {
-        // item.id = "expense-row-4" (0-based) => sheet row = 4 + 5 = 9
+        // item.id = "expense-row-4" (0-based) => haqiqiy sheet row = index + 5
         const match = item.id.match(/(\d+)$/);
         if (!match) continue;
-        const sheetRow = parseInt(match[1]) + 5;
-        const sheetRowId = this.generateSheetRowId(monthName, sheetRow, item.type);
+        
+        // MUHIM: item.id dan index olish, generateSheetRowId da index+5 ni ishlatamiz
+        const index = parseInt(match[1]); // 0-based index
+        const sheetRowForId = index + 5; // B5 dan boshlanadi
+        
+        // generateSheetRowId da haqiqiy sheet row ni ishlatamiz
+        const sheetRowId = this.generateSheetRowId(monthName, sheetRowForId, item.type);
         validSheetRowIds.add(sheetRowId);
         
         // Sheet ma'lumotlarini saqlab qolamiz
         sheetItems.push({
           ...item,
           sheetRowId,
-          sheetRow,
+          sheetRow: sheetRowForId,
         });
       }
 
