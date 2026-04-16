@@ -26,11 +26,12 @@ export class SyncService implements OnModuleInit {
     this.logger.log('SyncService ishga tushdi — Webhook rejimida tayyor');
   }
 
-  // Har 20 daqiqada avtomatik tekshirish - VAQTINCHA TO'XATILDI
-  // @Cron('*/1 * * * *')
+  // Har 1 daqiqada avtomatik tekshirish - Sheets va Database ni sinxronizatsiya qilish
+  @Cron('*/1 * * * *')
   async scheduledValidationJob() {
-    this.logger.log('Cron job to\'xtatilgan - faqat webhook ishlayapti');
-    // await this.validateAndCleanAll();
+    this.logger.log('1-daqiqalik sinxronizatsiya boshlandi...');
+    await this.validateAndCleanAll();
+    this.logger.log('1-daqiqalik sinxronizatsiya tugadi');
   }
 
   async validateAndCleanAll() {
