@@ -73,22 +73,23 @@ export class SyncService implements OnModuleInit {
     }
   }
 
-  // Sheets bilan solishtirish: DB da bor lekin Sheets da yo'q => o'chir
-  // MUHIM: Sheets bo'sh kelsa (xato yoki haqiqatan bo'sh) — hech nima o'chirmaymiz
+  // Sheets bilan solishtirish: DB da bor lekin Sheets da yo'q => o'chir, Sheets da bor lekin DB da yo'q => qo'sh
+  // MUHIM: Sheets bo'sh kelsa (xato yoki haqiqatan bo'sh) - hech nima o'chirmaymiz
   private async compareWithSheets(monthName: string, monthNum: number) {
     try {
       // getFullMonthData orqali sheets dan ma'lumot olish
       const monthData = await this.sheetsService.getFullMonthData(monthName);
 
-      // Sheets dan ma'lumot kelmasa — xavfsiz tomon: hech nima o'chirmaymiz
+      // Sheets dan ma'lumot kelmasa - xavfsiz tomon: hech nima o'chirmaymiz
       if (!monthData || monthData.totalCount === 0) {
-        this.logger.log(`${monthName}: Sheets bo'sh yoki xato — skip`);
+        this.logger.log(`${monthName}: Sheets bo'sh yoki xato - skip`);
         return { skipped: true };
       }
 
       // getFullMonthData da id: "expense-row-4" (0-based index), lekin
       // haqiqiy sheet row = index + 5 (chunki B5 dan boshlanadi)
       const validSheetRowIds = new Set<string>();
+      const sheetItems = [];
 
       for (const item of [...monthData.expenses, ...monthData.incomes]) {
         // item.id = "expense-row-4" (0-based) => sheet row = 4 + 5 = 9
@@ -97,6 +98,13 @@ export class SyncService implements OnModuleInit {
         const sheetRow = parseInt(match[1]) + 5;
         const sheetRowId = this.generateSheetRowId(monthName, sheetRow, item.type);
         validSheetRowIds.add(sheetRowId);
+        
+        // Sheet ma'lumotlarini saqlab qolamiz
+        sheetItems.push({
+          ...item,
+          sheetRowId,
+          sheetRow,
+        });
       }
 
       // DB dan o'sha oydagilarni olish
@@ -105,8 +113,7 @@ export class SyncService implements OnModuleInit {
         select: { id: true, sheetRowId: true },
       });
 
-      // DB da bor, Sheets da yo'q => o'chir
-      // MUHIM: Faqat to'g'ri formatdagilarini o'chiramiz, noto'g'ri formatdagilar separate validation da o'chiriladi
+      // 1. DB da bor, Sheets da yo'q => o'chir
       const toDelete = dbTx
         .filter(tx => {
           // 1. sheetRowId bo'lishi kerak
@@ -125,7 +132,51 @@ export class SyncService implements OnModuleInit {
         this.logger.warn(`${monthName}: Sheets da yo'q ${toDelete.length} ta yozuv o'chirildi`);
       }
 
-      return { success: true, deletedOrphans: toDelete.length };
+      // 2. Sheets da bor, lekin DB da yo'q => qo'sh
+      let addedCount = 0;
+      const existingSheetRowIds = new Set(dbTx.map(tx => tx.sheetRowId).filter(Boolean));
+
+      for (const sheetItem of sheetItems) {
+        if (!existingSheetRowIds.has(sheetItem.sheetRowId)) {
+          // Yangi yozuv qo'shamiz
+          try {
+            const dateParts = String(sheetItem.date).split('.');
+            const dbDate = dateParts.length === 3 
+              ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
+              : new Date();
+
+            const category = await this.prisma.category.upsert({
+              where: { name: sheetItem.category || 'Nomalum' },
+              update: {},
+              create: { name: sheetItem.category || 'Nomalum', type: sheetItem.type },
+            });
+
+            await this.prisma.transaction.create({
+              data: {
+                date: dbDate,
+                amount: Number(sheetItem.amount) || 0,
+                description: String(sheetItem.description || ''),
+                type: sheetItem.type,
+                month: monthNum,
+                year: 2026,
+                categoryId: category.id,
+                sheetRowId: sheetItem.sheetRowId,
+              }
+            });
+            
+            addedCount++;
+            this.logger.log(`Yangi yozuv qo'shildi: ${sheetItem.sheetRowId}`);
+          } catch (error: any) {
+            this.logger.error(`Yangi yozuv qo'shish xatosi (${sheetItem.sheetRowId}): ${error.message}`);
+          }
+        }
+      }
+
+      if (addedCount > 0) {
+        this.logger.log(`${monthName}: Sheets dan ${addedCount} ta yangi yozuv qo'shildi`);
+      }
+
+      return { success: true, deletedOrphans: toDelete.length, addedNew: addedCount };
     } catch (error: any) {
       this.logger.warn(`Sheets solishtirish xatosi (${monthName}): ${error.message}`);
       // Xato bo'lsa ham hech nima o'chirmaydi
