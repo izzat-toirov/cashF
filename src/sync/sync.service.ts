@@ -153,6 +153,28 @@ export class SyncService implements OnModuleInit {
       const sheetRowId = this.generateSheetRowId(monthName, row, transactionType);
       const monthNum = this.getMonthNumber(monthName);
 
+      // MUHIM: Duplicate oldini olish - avval shu row uchun boshqa yozuv borligini tekshiramiz
+      const existingSameRow = await this.prisma.transaction.findFirst({
+        where: {
+          sheetRowId: {
+            startsWith: `${monthNum}-2026-${transactionType}-row-`
+          },
+          year: 2026,
+          month: monthNum,
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      // Agar shu row uchun allaqachon yozuv bo'lsa va u hozirgi kelayotgan ma'lumotdan farq qilsa
+      if (existingSameRow && existingSameRow.sheetRowId !== sheetRowId) {
+        this.logger.warn(`Duplicate row detected: existing=${existingSameRow.sheetRowId}, new=${sheetRowId}`);
+        // Eski yozuvni o'chirib, yangisini qo'yamiz
+        await this.prisma.transaction.delete({
+          where: { id: existingSameRow.id }
+        });
+        this.logger.log(`Eski duplicate o'chirildi: ${existingSameRow.sheetRowId}`);
+      }
+
       const dateParts = String(dateStr).split('.');
       const dbDate =
         dateParts.length === 3
