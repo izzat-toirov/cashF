@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, Param } from '@nestjs/common';
+import { Controller, Post, Body, Logger, Param, Delete } from '@nestjs/common';
 import { SyncService } from './sync.service';
 import { ApiBody, ApiOperation } from '@nestjs/swagger';
 import { SyncWebhookDto } from './dto/create-sync.dto';
@@ -9,25 +9,25 @@ export class SyncController {
 
   constructor(private readonly syncService: SyncService) {}
 
+  // ✅ ASOSIY: Google Sheets onEdit → bu endpoint
   @Post('webhook')
-  @ApiOperation({ summary: 'Google Sheets-dan maʼlumotlarni sinxronlash' })
-  @ApiBody({ type: SyncWebhookDto }) // Swagger uchun aniqlashtirish
+  @ApiOperation({ summary: 'Google Sheets onEdit — bitta qatorni sinxronlash' })
+  @ApiBody({ type: SyncWebhookDto })
   async handleWebhook(@Body() body: SyncWebhookDto) {
-    this.logger.log(`Webhook keldi. Body: ${JSON.stringify(body)}`);
-    
-    const month = body?.monthName;
-    if (!month) {
-      return { success: false, message: "monthName maydoni yuborilmadi." };
+    this.logger.log(`📥 Webhook: ${JSON.stringify(body)}`);
+
+    if (!body?.monthName) {
+      return { success: false, message: 'monthName yuborilmadi' };
     }
-  
-    return this.syncService.syncMonthToDatabase(month);
+
+    // ✅ syncSingleRow — webhook uchun to'g'ri metod
+    return this.syncService.syncSingleRow(body);
   }
-  
-  @Post(':monthName') // 2. Dinamik parametr pastda
-  async syncMonth(@Param('monthName') monthName: string) {
-    if (monthName === 'webhook') {
-        return { success: false, message: "Noto'g'ri parametr" };
-    }
-    return this.syncService.syncMonthToDatabase(monthName);
+
+  // 🧹 Cleanup — bir marta ishlatish (Swagger yoki Postman orqali)
+  @Delete('cleanup/:monthName')
+  @ApiOperation({ summary: "Noto'g'ri sheetRowId larni o'chirish" })
+  cleanupDuplicates(@Param('monthName') monthName: string) {
+    return this.syncService.cleanupDuplicates(monthName);
   }
 }

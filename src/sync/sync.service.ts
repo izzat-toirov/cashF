@@ -1,66 +1,38 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
 import { SyncWebhookDto } from './dto/create-sync.dto';
 
 @Injectable()
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
 
-  // ✅ Sheet nomi → oy raqami xaritasi
   private readonly monthMap: Record<string, number> = {
-    Yanvar: 1,
-    Fevral: 2,
-    Mart: 3,
-    Aprel: 4,
-    May: 5,
-    Iyun: 6,
-    Iyul: 7,
-    Avgust: 8,
-    Sentabr: 9,
-    Oktabr: 10,
-    Noyabr: 11,
-    Dekabr: 12,
+    Yanvar: 1, Fevral: 2, Mart: 3, Aprel: 4,
+    May: 5,    Iyun: 6,  Iyul: 7, Avgust: 8,
+    Sentabr: 9, Oktabr: 10, Noyabr: 11, Dekabr: 12,
   };
 
-  constructor(
-    private readonly sheetsService: GoogleSheetsService,
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  onModuleInit() {
-    this.startPolling(60_000); // Har minutda tekshirish
+  // ✅ Polling YO'Q — faqat eski yozuvlarni tozalash
+  async onModuleInit() {
+    this.logger.log('🚀 SyncService ishga tushdi — cleanup boshlandi');
+    for (const month of Object.keys(this.monthMap)) {
+      await this.cleanupDuplicates(month);
+    }
+    this.logger.log('✅ Cleanup tugadi — webhook rejimida ishlayapti');
   }
 
-  // ✅ ID yaratish standarti: Dublikatni oldini olish uchun yagona kalit
-  private generateSheetRowId(
-    month: string,
-    row: number | string,
-    type: string,
-  ): string {
-    return `${month}-2026-${type.toLowerCase()}-row-${row}`;
+  private generateSheetRowId(monthName: string, row: number | string, type: string): string {
+    const rowNum = String(row).replace(/\D+/g, '');
+    return `${monthName}-2026-${type.toLowerCase()}-row-${rowNum}`;
   }
 
-  // ✅ monthName dan oy raqamini olish (xato bo'lsa sana asosida fallback)
-  private getMonthNumber(monthName: string, fallbackDate: Date): number {
-    return this.monthMap[monthName] ?? fallbackDate.getMonth() + 1;
+  private getMonthNumber(monthName: string): number {
+    return this.monthMap[monthName] ?? new Date().getMonth() + 1;
   }
 
-  private startPolling(intervalMs: number) {
-    setInterval(async () => {
-      const monthNames = Object.keys(this.monthMap);
-      const month = monthNames[new Date().getMonth()];
-      try {
-        await this.syncMonthToDatabase(month);
-      } catch (e: any) {
-        this.logger.error(`Polling xatosi: ${e.message}`);
-      }
-    }, intervalMs);
-  }
-
-  /**
-   * WEBHOOK: Faqat o'zgargan qatorni bazaga yozish (yoki yangilash)
-   */
+  // ✅ ASOSIY: Webhook handler
   async syncSingleRow(dto: SyncWebhookDto) {
     const { monthName, rowData, row } = dto;
 
@@ -69,11 +41,16 @@ export class SyncService implements OnModuleInit {
     }
 
     try {
-      // rowData: [date, amount, category, description, type]
       const [dateStr, amount, categoryName, description, rowType] = rowData;
+
+      // ✅ Qator bo'sh kelsa (o'chirilgan) — bazadan ham o'chirish
+      if (!dateStr && !amount && !categoryName) {
+        return await this.deleteRow(monthName, row, rowType);
+      }
 
       const transactionType = (rowType || 'expense').toLowerCase();
       const sheetRowId = this.generateSheetRowId(monthName, row, transactionType);
+      const monthNum = this.getMonthNumber(monthName);
 
       const dateParts = String(dateStr).split('.');
       const dbDate =
@@ -81,110 +58,101 @@ export class SyncService implements OnModuleInit {
           ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
           : new Date();
 
-      // ✅ FIX: monthNum ni sanadan emas, sheet nomidan olamiz
-      // Masalan: sheet "Mart" bo'lsa, sana "30.05.2026" bo'lsa ham → month = 3
-      const monthNum = this.getMonthNumber(monthName, dbDate);
+      const parsedAmount = Number(String(amount).replace(/\s/g, '')) || 0;
 
-      // 1. Kategoriyani Upsert qilish
+      // ✅ O'zgarish yo'q bo'lsa skip
+      const existing = await this.prisma.transaction.findUnique({
+        where: { sheetRowId },
+      });
+      if (existing && existing.amount === parsedAmount && 
+          existing.description === String(description || '')) {
+        this.logger.log(`⏭️ Skip (o'zgarish yo'q): ${sheetRowId}`);
+        return { success: true, message: "O'zgarish yo'q", data: existing };
+      }
+
       const category = await this.prisma.category.upsert({
         where: { name: categoryName || 'Nomalum' },
         update: {},
         create: { name: categoryName || 'Nomalum', type: transactionType },
       });
 
-      // 2. Transaksiyani UPSERT qilish
       const txData = {
         date: dbDate,
-        amount: Number(String(amount).replace(/\s/g, '')) || 0,
+        amount: parsedAmount,
         description: String(description || ''),
         type: transactionType,
-        month: monthNum, // ✅ Sheet nomidan olingan to'g'ri oy
+        month: monthNum,
         year: 2026,
         categoryId: category.id,
-        sheetRowId: sheetRowId,
+        sheetRowId,
       };
 
       const result = await this.prisma.transaction.upsert({
-        where: { sheetRowId: sheetRowId },
+        where: { sheetRowId },
         update: txData,
         create: txData,
       });
 
-      this.logger.log(
-        `✅ Saqlandi: ${sheetRowId} | month=${monthNum} | amount=${txData.amount}`,
-      );
+      this.logger.log(`✅ Webhook: ${sheetRowId} | amount=${parsedAmount}`);
+      return { success: true, message: 'Sinxronlandi', data: result };
 
-      return {
-        success: true,
-        message: 'Muvaffaqiyatli sinxronlandi',
-        data: result,
-      };
     } catch (error: any) {
       this.logger.error(`Webhook xatosi: ${error.message}`);
       return { success: false, message: error.message };
     }
   }
 
-  /**
-   * FULL SYNC (Polling): To'liq listni tekshirish
-   */
-  async syncMonthToDatabase(monthName: string) {
+  // ✅ Sheets dan qator o'chirilganda bazadan ham o'chirish
+  private async deleteRow(monthName: string, row: number | string, rowType?: string) {
     try {
-      const data = await this.sheetsService.getFullMonthData(monthName);
-      if (!data) return;
+      const type = (rowType || 'expense').toLowerCase();
+      const sheetRowId = this.generateSheetRowId(monthName, row, type);
 
-      const allRecords = [
-        ...(data.expenses || []).map((r) => ({ ...r, type: 'expense' })),
-        ...(data.incomes || []).map((r) => ({ ...r, type: 'income' })),
-      ].filter((r) => r.id);
+      const deleted = await this.prisma.transaction.deleteMany({
+        where: { sheetRowId },
+      });
 
-      // ✅ FIX: monthNum ni bir marta, sheet nomidan olamiz
-      const monthNum = this.monthMap[monthName];
-      if (!monthNum) {
-        this.logger.warn(`Noto'g'ri oy nomi: ${monthName}`);
-        return;
-      }
-
-      for (const record of allRecords) {
-        const type = record.type.toLowerCase();
-        const sheetRowId = this.generateSheetRowId(monthName, record.id, type);
-
-        const dateParts = record.date?.split('.') || [];
-        const dbDate =
-          dateParts.length === 3
-            ? new Date(+dateParts[2], +dateParts[1] - 1, +dateParts[0])
-            : new Date();
-
-        const category = await this.prisma.category.upsert({
-          where: { name: record.category || 'Nomalum' },
-          update: {},
-          create: { name: record.category || 'Nomalum', type: type },
-        });
-
-        const txData = {
-          date: dbDate,
-          amount: Number(String(record.amount).replace(/\s/g, '')) || 0,
-          description: record.description || '',
-          type: type,
-          month: monthNum, // ✅ Sheet nomidan olingan to'g'ri oy
-          year: 2026,
-          categoryId: category.id,
-          sheetRowId,
-        };
-
-        await this.prisma.transaction.upsert({
-          where: { sheetRowId },
-          update: txData,
-          create: txData,
-        });
-      }
-
-      this.logger.log(
-        `✅ Full sync: ${monthName} | ${allRecords.length} ta yozuv`,
-      );
-      return { success: true };
+      this.logger.log(`🗑️ O'chirildi: ${sheetRowId} | count=${deleted.count}`);
+      return { success: true, message: "O'chirildi", deleted: deleted.count };
     } catch (error: any) {
-      this.logger.error(`Sync xatosi: ${error.message}`);
+      return { success: false, message: error.message };
+    }
+  }
+
+  // 🧹 Eski noto'g'ri formatdagi yozuvlarni tozalash
+  async cleanupDuplicates(monthName: string) {
+    try {
+      const monthNum = this.monthMap[monthName];
+      if (!monthNum) return { success: false, message: "Noto'g'ri oy" };
+
+      const all = await this.prisma.transaction.findMany({
+        where: { month: monthNum, year: 2026 },
+        select: { id: true, sheetRowId: true },
+      });
+
+      const toDelete = all
+        .filter(tx => {
+          const sid = tx.sheetRowId || '';
+          return (
+            /^\d+-2026-/.test(sid) ||                    // "3-2026-..."
+            sid.includes('-row-expense-row-') ||          // ikkilangan
+            sid.includes('-row-income-row-')
+          );
+        })
+        .map(tx => tx.id);
+
+      if (toDelete.length === 0) {
+        this.logger.log(`✅ Cleanup: ${monthName} — toza`);
+        return { success: true, deleted: 0 };
+      }
+
+      await this.prisma.transaction.deleteMany({ where: { id: { in: toDelete } } });
+      this.logger.log(`🧹 ${monthName}: ${toDelete.length} ta o'chirildi`);
+      return { success: true, deleted: toDelete.length };
+
+    } catch (error: any) {
+      this.logger.error(`Cleanup xatosi: ${error.message}`);
+      return { success: false, message: error.message };
     }
   }
 }
