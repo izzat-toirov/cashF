@@ -30,4 +30,9 @@ export class SyncController {
   cleanupDuplicates(@Param('monthName') monthName: string) {
     return this.syncService.cleanupDuplicates(monthName);
   }
+
+  @Post('category')
+async syncCategory(@Body() body: { name: string; type: string }) {
+  return this.syncService.syncCategoryFromSheet(body);
+}
 }

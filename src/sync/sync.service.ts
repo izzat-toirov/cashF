@@ -156,4 +156,20 @@ private generateSheetRowId(monthName: string, row: number | string, type: string
       return { success: false, message: error.message };
     }
   }
+
+
+  async syncCategoryFromSheet(data: { name: string; type: string }) {
+    try {
+      const result = await this.prisma.category.upsert({
+        where: { name: data.name },
+        update: { type: data.type },
+        create: { name: data.name, type: data.type },
+      });
+      this.logger.log(`📂 Category synced: ${result.name} (${result.type})`);
+      return { success: true, data: result };
+    } catch (error: any) {
+      this.logger.error(`Category sync xatosi: ${error.message}`);
+      return { success: false, message: error.message };
+    }
+  }
 }
