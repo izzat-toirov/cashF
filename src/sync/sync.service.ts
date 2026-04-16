@@ -27,7 +27,7 @@ export class SyncService implements OnModuleInit {
   }
 
   // Har 20 daqiqada avtomatik tekshirish
-  @Cron('*/20 * * * *')
+  @Cron('*/1 * * * *')
   async scheduledValidationJob() {
     this.logger.log('20-daqiqalik tekshiruv boshlandi...');
     await this.validateAndCleanAll();
