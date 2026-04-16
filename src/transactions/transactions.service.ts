@@ -3,12 +3,48 @@ import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
 
   constructor(private readonly sheetsService: GoogleSheetsService, private readonly prisma: PrismaService,) {}
+
+  async onModuleInit() {
+    await this.checkAndSyncIfMonthChanged();
+  }
+
+  // Har kuni yarim tunda avtomat tekshiradi
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleDailyCheck() {
+    this.logger.log('Kundalik tekshiruv: Oy o‘zgarganini tekshirmoqdaman...');
+    await this.checkAndSyncIfMonthChanged();
+  }
+
+  async checkAndSyncIfMonthChanged() {
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentYear = now.getFullYear();
+
+    // 1. Bazadan oxirgi sync qilingan tranzaksiyani topamiz
+    const lastTransaction = await this.prisma.transaction.findFirst({
+      orderBy: { createdAt: 'desc' },
+      select: { month: true, year: true }
+    });
+
+    // 2. Agar bazada joriy oy va yil bo'lsa, demak oy hali o'zgarmagan
+    if (lastTransaction && 
+        lastTransaction.month === currentMonth && 
+        lastTransaction.year === currentYear) {
+      this.logger.log(`Oy hali o‘zgarmagan (${currentMonth}-${currentYear}). Sinxronizatsiya shart emas.`);
+      return;
+    }
+
+    // 3. Agar oy o'zgargan bo'lsa yoki baza bo'sh bo'lsa, sync qilamiz
+    this.logger.warn('Yangi oy aniqlandi! Sheets ma’lumotlari bazaga ko‘chirilmoqda...');
+    await this.syncCurrentMonth();
+  }
 
 
   async create(dto: CreateTransactionDto) {
@@ -250,6 +286,24 @@ export class TransactionsService {
     const sheetName = this.sheetsService.getSheetName(year, month);
 
     return { type, rowIndex, sheetName };
+  }
+
+
+  async syncCurrentMonth() {
+    const monthNames = [
+      'Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
+      'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'
+    ];
+    
+    const now = new Date();
+    const currentMonthName = monthNames[now.getMonth()];
+    const currentYear = now.getFullYear();
+
+    // Sheets'dagi list nomi odatda "Aprel 2026" yoki shunchaki "Aprel" bo'lishi mumkin
+    // Sizning mantiqingizga ko'ra faqat oy nomini yuboramiz
+    this.logger.log(`Sinxronizatsiya boshlandi: ${currentMonthName} ${currentYear}`);
+    
+    return this.syncMonthToDatabase(currentMonthName);
   }
 
   async syncMonthToDatabase(monthName: string) {

@@ -9,6 +9,7 @@ import { HealthModule } from './health/health.module';
 // import { TelegramModule } from './telegram/telegram.module';
 import { TelegramService } from './telegram/telegram.service';
 import { SyncModule } from './sync/sync.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { SyncModule } from './sync/sync.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ScheduleModule.forRoot(),
     GoogleSheetsModule,
     FinanceModule,
     AuthModule,
