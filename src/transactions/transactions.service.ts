@@ -306,6 +306,95 @@ export class TransactionsService {
     return this.syncMonthToDatabase(currentMonthName);
   }
 
+  // async syncMonthToDatabase(monthName: string) {
+  //   try {
+  //     const data = await this.sheetsService.getFullMonthData(monthName);
+  //     if (!data || (!data.expenses && !data.incomes)) {
+  //       return { success: false, message: "Sheets'dan ma'lumot olishda xatolik" };
+  //     }
+  
+  //     const [unknownCategory, existingCategories] = await Promise.all([
+  //       this.prisma.category.upsert({
+  //         where: { name: 'Nomalum' },
+  //         update: {},
+  //         create: { name: 'Nomalum', type: 'EXPENSE' }
+  //       }),
+  //       this.prisma.category.findMany()
+  //     ]);
+  
+  //     const categoryMap = new Map(existingCategories.map(cat => [cat.name.toLowerCase().trim(), cat]));
+  //     const allRecords = [...(data.expenses || []), ...(data.incomes || [])];
+  
+  //     const monthMap: Record<string, number> = {
+  //       'Yanvar': 1, 'Fevral': 2, 'Mart': 3, 'Aprel': 4, 'May': 5, 'Iyun': 6,
+  //       'Iyul': 7, 'Avgust': 8, 'Sentabr': 9, 'Oktabr': 10, 'Noyabr': 11, 'Dekabr': 12
+  //     };
+  
+  //     const parts = monthName.split(' ');
+  //     const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
+  
+  //     const syncPromises = allRecords.map(async (record) => {
+  //       if (!record.id) return null;
+  
+  //       try {
+  //         const sheetCatName = record.category?.toLowerCase().trim() || '';
+  //         const categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
+  
+  //         // ✅ Yilni tranzaksiya sanasidan olamiz
+  //         const [d, m, y] = (record.date || "").split('.').map(Number);
+  //         const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
+          
+  //         // ✅ Yilni sanadan aniqlaymiz, bo'lmasa joriy yil
+  //         const resolvedYear = (y && y > 2000) ? y : new Date().getFullYear();
+  
+  //         // ✅ sheetRowId = "oy-yil-id" — har oy uchun unique
+  //         const uniqueSheetRowId = `${monthNum}-${resolvedYear}-${String(record.id)}`;
+  
+  //         const transactionData = {
+  //           date: dbDate,
+  //           amount: Number(record.amount) || 0,
+  //           description: record.description || '',
+  //           type: record.type || categoryRecord.type,
+  //           sheetRowId: uniqueSheetRowId,
+  //           month: monthNum,
+  //           year: resolvedYear,
+  //           categoryId: categoryRecord.id,
+  //         };
+  
+  //         return this.prisma.transaction.upsert({
+  //           where: { sheetRowId: uniqueSheetRowId },
+  //           update: transactionData,  // mavjud bo'lsa yangilaydi, o'chirmaydi
+  //           create: transactionData,  // yo'q bo'lsa yaratadi
+  //           include: { category: true }
+  //         });
+  //       } catch (innerError) {
+  //         this.logger.error(`Qator sync xatosi [ID: ${record.id}]: ${innerError}`);
+  //         return null;
+  //       }
+  //     });
+  
+  //     const results = await Promise.all(syncPromises);
+  //     const savedTransactions = results.filter(r => r !== null);
+  
+  //     return {
+  //       success: true,
+  //       message: `${monthName} sinxronizatsiya qilindi`,
+  //       stats: {
+  //         total: allRecords.length,
+  //         saved: savedTransactions.length
+  //       },
+  //       data: savedTransactions
+  //     };
+  
+  //   } catch (error: unknown) {
+  //     const msg = error instanceof Error ? error.message : String(error);
+  //     this.logger.error(`Sync xatoligi: ${msg}`);
+  //     return { success: false, message: msg };
+  //   }
+  // }
+
+
+
   async syncMonthToDatabase(monthName: string) {
     try {
       const data = await this.sheetsService.getFullMonthData(monthName);
@@ -333,48 +422,52 @@ export class TransactionsService {
       const parts = monthName.split(' ');
       const monthNum = monthMap[parts[0]] || (new Date().getMonth() + 1);
   
-      const syncPromises = allRecords.map(async (record) => {
-        if (!record.id) return null;
+      const savedTransactions = [];
+      const BATCH_SIZE = 10; // ✅ Bir vaqtda 10 ta so'rov yuboramiz (Supabase limiti uchun xavfsiz)
   
-        try {
-          const sheetCatName = record.category?.toLowerCase().trim() || '';
-          const categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
+      // ✅ Recordslarni bo'laklarga bo'lib ishlaymiz
+      for (let i = 0; i < allRecords.length; i += BATCH_SIZE) {
+        const batch = allRecords.slice(i, i + BATCH_SIZE);
   
-          // ✅ Yilni tranzaksiya sanasidan olamiz
-          const [d, m, y] = (record.date || "").split('.').map(Number);
-          const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
-          
-          // ✅ Yilni sanadan aniqlaymiz, bo'lmasa joriy yil
-          const resolvedYear = (y && y > 2000) ? y : new Date().getFullYear();
+        const batchPromises = batch.map(async (record) => {
+          if (!record.id) return null;
   
-          // ✅ sheetRowId = "oy-yil-id" — har oy uchun unique
-          const uniqueSheetRowId = `${monthNum}-${resolvedYear}-${String(record.id)}`;
+          try {
+            const sheetCatName = record.category?.toLowerCase().trim() || '';
+            const categoryRecord = categoryMap.get(sheetCatName) || unknownCategory;
   
-          const transactionData = {
-            date: dbDate,
-            amount: Number(record.amount) || 0,
-            description: record.description || '',
-            type: record.type || categoryRecord.type,
-            sheetRowId: uniqueSheetRowId,
-            month: monthNum,
-            year: resolvedYear,
-            categoryId: categoryRecord.id,
-          };
+            const [d, m, y] = (record.date || "").split('.').map(Number);
+            const dbDate = (d && m && y) ? new Date(y, m - 1, d) : new Date();
+            const resolvedYear = (y && y > 2000) ? y : new Date().getFullYear();
+            const uniqueSheetRowId = `${monthNum}-${resolvedYear}-${String(record.id)}`;
   
-          return this.prisma.transaction.upsert({
-            where: { sheetRowId: uniqueSheetRowId },
-            update: transactionData,  // mavjud bo'lsa yangilaydi, o'chirmaydi
-            create: transactionData,  // yo'q bo'lsa yaratadi
-            include: { category: true }
-          });
-        } catch (innerError) {
-          this.logger.error(`Qator sync xatosi [ID: ${record.id}]: ${innerError}`);
-          return null;
+            const transactionData = {
+              date: dbDate,
+              amount: Number(record.amount) || 0,
+              description: record.description || '',
+              type: record.type || categoryRecord.type,
+              sheetRowId: uniqueSheetRowId,
+              month: monthNum,
+              year: resolvedYear,
+              categoryId: categoryRecord.id,
+            };
+  
+            return await this.prisma.transaction.upsert({
+              where: { sheetRowId: uniqueSheetRowId },
+              update: transactionData,
+              create: transactionData,
+            });
+          } catch (innerError) {
+            const errorMessage = innerError instanceof Error ? innerError.message : String(innerError);
+            this.logger.error(`Qator sync xatosi [ID: ${record.id}]: ${errorMessage}`);
+            return null;
         }
-      });
+        });
   
-      const results = await Promise.all(syncPromises);
-      const savedTransactions = results.filter(r => r !== null);
+        // ✅ Har 10 ta so'rov tugashini kutamiz va keyingi 10 talikka o'tamiz
+        const results = await Promise.all(batchPromises);
+        savedTransactions.push(...results.filter(r => r !== null));
+      }
   
       return {
         success: true,
@@ -382,8 +475,7 @@ export class TransactionsService {
         stats: {
           total: allRecords.length,
           saved: savedTransactions.length
-        },
-        data: savedTransactions
+        }
       };
   
     } catch (error: unknown) {
@@ -392,7 +484,6 @@ export class TransactionsService {
       return { success: false, message: msg };
     }
   }
-
 
   
 }
