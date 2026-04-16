@@ -11,9 +11,14 @@ export class TransactionsService {
 
   constructor(private readonly sheetsService: GoogleSheetsService, private readonly prisma: PrismaService,) {}
 
-  async onModuleInit() {
+  // transactions.service.ts ichida
+async onModuleInit() {
+  // 10 soniya kutamiz, SyncService cleanup qilib bo'lishi uchun
+  this.logger.log('Sinxronizatsiya 10 soniyadan keyin boshlanadi...');
+  setTimeout(async () => {
     await this.checkAndSyncIfMonthChanged();
-  }
+  }, 10000); 
+}
 
   // Har kuni yarim tunda avtomat tekshiradi
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
