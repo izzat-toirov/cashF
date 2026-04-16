@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, Param, Delete } from '@nestjs/common';
+import { Controller, Post, Body, Logger, Delete } from '@nestjs/common';
 import { SyncService } from './sync.service';
 import { ApiBody, ApiOperation } from '@nestjs/swagger';
 import { SyncWebhookDto } from './dto/create-sync.dto';
@@ -20,19 +20,18 @@ export class SyncController {
       return { success: false, message: 'monthName yuborilmadi' };
     }
 
-    // ✅ syncSingleRow — webhook uchun to'g'ri metod
     return this.syncService.syncSingleRow(body);
   }
 
   // 🧹 Cleanup — bir marta ishlatish (Swagger yoki Postman orqali)
-  @Delete('cleanup/:monthName')
-  @ApiOperation({ summary: "Noto'g'ri sheetRowId larni o'chirish" })
-  cleanupDuplicates(@Param('monthName') monthName: string) {
-    return this.syncService.cleanupDuplicates(monthName);
+  @Delete('cleanup')
+  @ApiOperation({ summary: "Noto'g'ri sheetRowId larni o'chirish (barcha oylar)" })
+  runFullCleanup() {
+    return this.syncService.runFullCleanup();
   }
 
   @Post('category')
-async syncCategory(@Body() body: { name: string; type: string }) {
-  return this.syncService.syncCategoryFromSheet(body);
-}
+  async syncCategory(@Body() body: { name: string; type: string }) {
+    return this.syncService.syncCategoryFromSheet(body);
+  }
 }
