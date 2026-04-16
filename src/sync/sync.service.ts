@@ -2,10 +2,14 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SyncWebhookDto } from './dto/create-sync.dto';
+import { google, sheets_v4 } from 'googleapis';
 
 @Injectable()
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
+  private sheets!: sheets_v4.Sheets;
+
+  private readonly SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID!;
 
   private readonly monthMap: Record<string, number> = {
     Yanvar: 1,  Fevral: 2,  Mart: 3,    Aprel: 4,
@@ -13,14 +17,31 @@ export class SyncService implements OnModuleInit {
     Sentabr: 9, Oktabr: 10, Noyabr: 11, Dekabr: 12,
   };
 
+  // Sheets tab nomlari (Uzbekcha — spreadsheet dagi tab nomlariga mos bo'lishi kerak)
+  private readonly sheetTabs = [
+    'Yanvar', 'Fevral', 'Mart',    'Aprel',
+    'May',    'Iyun',   'Iyul',    'Avgust',
+    'Sentabr','Oktabr', 'Noyabr',  'Dekabr',
+  ];
+
   constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
-    this.logger.log('🚀 SyncService ishga tushdi — Webhook + Cron rejimida tayyor');
+    // Google Sheets API client
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        private_key:  process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      },
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+
+    this.sheets = google.sheets({ version: 'v4', auth });
+    this.logger.log('🚀 SyncService ishga tushdi — Webhook + Cron (Sheets) tayyor');
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // TO'G'RI FORMAT: "3-2026-income-6"  (monthNum-year-type-rowNum)
+  // sheetRowId FORMAT: "3-2026-income-6"  (monthNum-year-type-rowNum)
   // ─────────────────────────────────────────────────────────────────────────────
   private generateSheetRowId(
     monthName: string,
@@ -28,9 +49,8 @@ export class SyncService implements OnModuleInit {
     type: string,
   ): string {
     const monthNum = this.getMonthNumber(monthName);
-    const rowNum   = String(row).replace(/\D+/g, ''); // faqat raqam
-    const t        = type.toLowerCase();              // income | expense
-    return `${monthNum}-2026-${t}-${rowNum}`;         // "3-2026-income-6"
+    const rowNum   = String(row).replace(/\D+/g, '');
+    return `${monthNum}-2026-${type.toLowerCase()}-${rowNum}`;
   }
 
   private getMonthNumber(monthName: string): number {
@@ -45,8 +65,12 @@ export class SyncService implements OnModuleInit {
     return new Date();
   }
 
+  private parseAmount(val: any): number {
+    return Number(String(val ?? '').replace(/\s/g, '').replace(',', '.')) || 0;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
-  // WEBHOOK HANDLER
+  // WEBHOOK HANDLER — Sheets onEdit triggeridan keladi
   // ─────────────────────────────────────────────────────────────────────────────
   async syncSingleRow(dto: SyncWebhookDto) {
     const { monthName, rowData, row } = dto;
@@ -60,53 +84,20 @@ export class SyncService implements OnModuleInit {
       const transactionType = (rowType || 'expense').toLowerCase();
       const sheetRowId      = this.generateSheetRowId(monthName, row, transactionType);
 
-      // Qator bo'sh kelsa — bazadan o'chirish
+      // Qator bo'sh — o'chirish
       if (!dateStr && !amount && !categoryName) {
         return await this.deleteBySheetRowId(sheetRowId);
       }
 
-      const monthNum  = this.getMonthNumber(monthName);
-      const dbDate    = this.parseDate(String(dateStr));
-      const parsedAmt = Number(String(amount).replace(/\s/g, '')) || 0;
-
-      // O'zgarish yo'q bo'lsa — skip
-      const existing = await this.prisma.transaction.findUnique({
-        where: { sheetRowId },
-      });
-      if (
-        existing &&
-        existing.amount      === parsedAmt &&
-        existing.description === String(description ?? '')
-      ) {
-        this.logger.log(`⏭️ Skip (o'zgarish yo'q): ${sheetRowId}`);
-        return { success: true, message: "O'zgarish yo'q", data: existing };
-      }
-
-      const category = await this.prisma.category.upsert({
-        where:  { name: categoryName || 'Nomalum' },
-        update: {},
-        create: { name: categoryName || 'Nomalum', type: transactionType },
-      });
-
-      const txData = {
-        date:        dbDate,
-        amount:      parsedAmt,
-        description: String(description ?? ''),
-        type:        transactionType,
-        month:       monthNum,
-        year:        2026,
-        categoryId:  category.id,
+      return await this.upsertTransaction({
         sheetRowId,
-      };
-
-      const result = await this.prisma.transaction.upsert({
-        where:  { sheetRowId },
-        update: txData,
-        create: txData,
+        dateStr:      String(dateStr),
+        amount:       this.parseAmount(amount),
+        categoryName: String(categoryName || 'Nomalum'),
+        description:  String(description ?? ''),
+        type:         transactionType,
+        monthName,
       });
-
-      this.logger.log(`✅ Webhook: ${sheetRowId} | amount=${parsedAmt}`);
-      return { success: true, message: 'Sinxronlandi', data: result };
 
     } catch (error: any) {
       this.logger.error(`Webhook xatosi: ${error.message}`);
@@ -115,43 +106,173 @@ export class SyncService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // CRON — har 20 daqiqada noto'g'ri formatdagi yozuvlarni tozalash
+  // CRON — har 20 daqiqada Sheets → Database to'liq solishtirish
   // ─────────────────────────────────────────────────────────────────────────────
-  @Cron('*/1 * * * *')
-  async cronCleanupAndValidate() {
-    this.logger.log('⏰ Cron: 20 daqiqalik tekshiruv boshlandi');
+  @Cron('*/20 * * * *')
+  async cronSyncFromSheets() {
+    this.logger.log('⏰ Cron: Sheets → DB solishtirish boshlandi');
 
-    const allTx = await this.prisma.transaction.findMany({
-      select: { id: true, sheetRowId: true },
-    });
+    let totalUpserted = 0;
+    let totalDeleted  = 0;
 
-    // To'g'ri format: "3-2026-income-6" yoki "3-2026-expense-6"
-    const VALID_PATTERN = /^\d+-2026-(income|expense)-\d+$/;
-
-    const invalidIds: string[] = [];
-
-    for (const tx of allTx) {
-      if (!tx.sheetRowId || !VALID_PATTERN.test(tx.sheetRowId)) {
-        invalidIds.push(tx.id);
-        this.logger.warn(`⚠️  Noto'g'ri format: "${tx.sheetRowId}" (id=${tx.id})`);
+    for (const monthName of this.sheetTabs) {
+      try {
+        const result = await this.syncMonthFromSheets(monthName);
+        totalUpserted += result.upserted;
+        totalDeleted  += result.deleted;
+      } catch (e: any) {
+        // Tab mavjud bo'lmasa (masalan Iyul hali kelmagan) — skip
+        this.logger.warn(`⚠️  ${monthName} tab topilmadi yoki xato: ${e.message}`);
       }
     }
 
-    if (invalidIds.length === 0) {
-      this.logger.log("✅ Cron: Barcha yozuvlar to'g'ri formatda");
-      return { deleted: 0 };
-    }
-
-    const deleted = await this.prisma.transaction.deleteMany({
-      where: { id: { in: invalidIds } },
-    });
-
-    this.logger.log(`🧹 Cron: ${deleted.count} ta noto'g'ri yozuv o'chirildi`);
-    return { deleted: deleted.count };
+    this.logger.log(`✅ Cron tugadi — upserted=${totalUpserted}, deleted=${totalDeleted}`);
+    return { totalUpserted, totalDeleted };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // YORDAMCHI: sheetRowId bo'yicha o'chirish
+  // Bitta oy uchun Sheets → DB sinxronlash
+  // ─────────────────────────────────────────────────────────────────────────────
+  private async syncMonthFromSheets(monthName: string) {
+    const monthNum = this.getMonthNumber(monthName);
+
+    // Sheets dan o'qish:
+    // Расходы: B:E (sana, summa, kategoriya, izoh) — 5-qatordan
+    // Доходы:  G:J (sana, summa, kategoriya, izoh) — 5-qatordan
+    const [expenseRes, incomeRes] = await Promise.all([
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.SPREADSHEET_ID,
+        range:         `${monthName}!B5:E`,
+      }),
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.SPREADSHEET_ID,
+        range:         `${monthName}!G5:J`,
+      }),
+    ]);
+
+    const expenseRows = expenseRes.data.values ?? [];
+    const incomeRows  = incomeRes.data.values  ?? [];
+
+    // Sheets dagi barcha sheetRowId lar (mavjud qatorlar)
+    const sheetIds = new Set<string>();
+
+    // Expense qatorlarni upsert
+    let upserted = 0;
+    for (let i = 0; i < expenseRows.length; i++) {
+      const [dateStr, amount, categoryName, description] = expenseRows[i];
+      if (!dateStr && !amount && !categoryName) continue; // bo'sh qator — skip
+
+      const rowNum     = i + 5; // Sheets da 5-qatordan boshlanadi
+      const sheetRowId = this.generateSheetRowId(monthName, rowNum, 'expense');
+      sheetIds.add(sheetRowId);
+
+      await this.upsertTransaction({
+        sheetRowId,
+        dateStr:      String(dateStr ?? ''),
+        amount:       this.parseAmount(amount),
+        categoryName: String(categoryName || 'Nomalum'),
+        description:  String(description ?? ''),
+        type:         'expense',
+        monthName,
+      });
+      upserted++;
+    }
+
+    // Income qatorlarni upsert
+    for (let i = 0; i < incomeRows.length; i++) {
+      const [dateStr, amount, categoryName, description] = incomeRows[i];
+      if (!dateStr && !amount && !categoryName) continue;
+
+      const rowNum     = i + 5;
+      const sheetRowId = this.generateSheetRowId(monthName, rowNum, 'income');
+      sheetIds.add(sheetRowId);
+
+      await this.upsertTransaction({
+        sheetRowId,
+        dateStr:      String(dateStr ?? ''),
+        amount:       this.parseAmount(amount),
+        categoryName: String(categoryName || 'Nomalum'),
+        description:  String(description ?? ''),
+        type:         'income',
+        monthName,
+      });
+      upserted++;
+    }
+
+    // DB da bor lekin Sheets da yo'q qatorlarni o'chirish
+    const dbRows = await this.prisma.transaction.findMany({
+      where:  { month: monthNum, year: 2026 },
+      select: { id: true, sheetRowId: true },
+    });
+
+    const toDelete = dbRows
+      .filter(tx => tx.sheetRowId && !sheetIds.has(tx.sheetRowId))
+      .map(tx => tx.id);
+
+    let deleted = 0;
+    if (toDelete.length > 0) {
+      const result = await this.prisma.transaction.deleteMany({
+        where: { id: { in: toDelete } },
+      });
+      deleted = result.count;
+      this.logger.log(`🗑️  ${monthName}: ${deleted} ta Sheets da yo'q yozuv o'chirildi`);
+    }
+
+    this.logger.log(`✅ ${monthName}: upserted=${upserted}, deleted=${deleted}`);
+    return { upserted, deleted };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Upsert yordamchi metod
+  // ─────────────────────────────────────────────────────────────────────────────
+  private async upsertTransaction(params: {
+    sheetRowId:   string;
+    dateStr:      string;
+    amount:       number;
+    categoryName: string;
+    description:  string;
+    type:         string;
+    monthName:    string;
+  }) {
+    const { sheetRowId, dateStr, amount, categoryName, description, type, monthName } = params;
+
+    // O'zgarish yo'q bo'lsa — skip
+    const existing = await this.prisma.transaction.findUnique({
+      where: { sheetRowId },
+    });
+    if (existing && existing.amount === amount && existing.description === description) {
+      return { success: true, message: "O'zgarish yo'q", data: existing };
+    }
+
+    const category = await this.prisma.category.upsert({
+      where:  { name: categoryName },
+      update: {},
+      create: { name: categoryName, type },
+    });
+
+    const txData = {
+      date:        this.parseDate(dateStr),
+      amount,
+      description,
+      type,
+      month:       this.getMonthNumber(monthName),
+      year:        2026,
+      categoryId:  category.id,
+      sheetRowId,
+    };
+
+    const result = await this.prisma.transaction.upsert({
+      where:  { sheetRowId },
+      update: txData,
+      create: txData,
+    });
+
+    this.logger.log(`💾 Upsert: ${sheetRowId} | amount=${amount}`);
+    return { success: true, message: 'Sinxronlandi', data: result };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // YORDAMCHI: o'chirish
   // ─────────────────────────────────────────────────────────────────────────────
   private async deleteBySheetRowId(sheetRowId: string) {
     try {
@@ -166,11 +287,11 @@ export class SyncService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // MANUAL: deploy dan keyin bir marta chaqirish uchun
+  // MANUAL: bir marta barcha oylarni Sheets dan sync qilish
   // ─────────────────────────────────────────────────────────────────────────────
   async runFullCleanup() {
-    this.logger.log('🧹 Manual full cleanup boshlandi...');
-    return await this.cronCleanupAndValidate();
+    this.logger.log('🔄 Manual full sync boshlandi...');
+    return await this.cronSyncFromSheets();
   }
 
   async syncCategoryFromSheet(data: { name: string; type: string }) {
