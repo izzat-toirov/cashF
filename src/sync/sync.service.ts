@@ -59,6 +59,19 @@ export class SyncService implements OnModuleInit {
     return results;
   }
 
+  // Qo'lda yozuvlarni o'chirish
+  async deleteBySheetRowIds(sheetRowIds: string[]) {
+    const result = await this.prisma.transaction.deleteMany({
+      where: { 
+        sheetRowId: { in: sheetRowIds },
+        year: 2026 
+      }
+    });
+    
+    this.logger.log(`${sheetRowIds.length} ta yozuv o'chirildi: ${sheetRowIds.join(', ')}`);
+    return { success: true, deleted: result.count };
+  }
+
   // Bitta oyni tekshirish: noto'g'ri format => o'chir, keyin Sheets bilan solishtir
   async validateMonth(monthName: string) {
     const monthNum = this.monthMap[monthName];
