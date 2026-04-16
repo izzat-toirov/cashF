@@ -100,7 +100,7 @@ export class SyncService implements OnModuleInit {
         
         // webhook bilan bir xil bo'lishi uchun actual sheet row ni ishlatamiz
         // index + 5 = actual sheet row (chunki B5 dan boshlanadi)
-        const actualSheetRow = parseInt(match[1]);
+        const actualSheetRow = parseInt(match[1]) + 5;
         
         // generateSheetRowId da actual sheet row ni ishlatamiz
         const sheetRowId = this.generateSheetRowId(monthName, actualSheetRow, item.type);
