@@ -41,6 +41,24 @@ export class SyncService implements OnModuleInit {
     return results;
   }
 
+  // Database ni to'liq tozalab, Sheets dan qayta yozish
+  async runFullCleanup() {
+    this.logger.log('Database to\'liq tozalanmoqda...');
+    
+    // 1. Barcha transaction larni o'chirish
+    await this.prisma.transaction.deleteMany({
+      where: { year: 2026 }
+    });
+    
+    this.logger.log('Barcha eski yozuvlar o\'chirildi');
+    
+    // 2. Sheets dan qayta yozish
+    const results = await this.validateAndCleanAll();
+    
+    this.logger.log('Database qayta yozildi');
+    return results;
+  }
+
   // Bitta oyni tekshirish: noto'g'ri format => o'chir, keyin Sheets bilan solishtir
   async validateMonth(monthName: string) {
     const monthNum = this.monthMap[monthName];
@@ -314,12 +332,6 @@ export class SyncService implements OnModuleInit {
     return this.monthMap[monthName] ?? new Date().getMonth() + 1;
   }
 
-  async runFullCleanup() {
-    this.logger.log('Manual tozalash boshlandi...');
-    const result = await this.validateAndCleanAll();
-    this.logger.log('Manual tozalash tugadi');
-    return result;
-  }
 
   async syncCategoryFromSheet(data: { name: string; type: string }) {
     try {
