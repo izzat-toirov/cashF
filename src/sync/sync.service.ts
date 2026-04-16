@@ -92,23 +92,25 @@ export class SyncService implements OnModuleInit {
       const sheetItems = [];
 
       for (const item of [...monthData.expenses, ...monthData.incomes]) {
-        // item.id = "expense-row-4" (0-based) => haqiqiy sheet row = index + 5
+        // item.id = "expense-row-4" (0-based index)
+        // webhook da actual sheet row keladi (masalan: 6, 7, 8...)
+        // shu sababli biz ham actual sheet row ni ishlatamiz
         const match = item.id.match(/(\d+)$/);
         if (!match) continue;
         
-        // MUHIM: item.id dan index olish, generateSheetRowId da index+5 ni ishlatamiz
-        const index = parseInt(match[1]); // 0-based index
-        const sheetRowForId = index + 5; // B5 dan boshlanadi
+        // webhook bilan bir xil bo'lishi uchun actual sheet row ni ishlatamiz
+        // index + 5 = actual sheet row (chunki B5 dan boshlanadi)
+        const actualSheetRow = parseInt(match[1]);
         
-        // generateSheetRowId da haqiqiy sheet row ni ishlatamiz
-        const sheetRowId = this.generateSheetRowId(monthName, sheetRowForId, item.type);
+        // generateSheetRowId da actual sheet row ni ishlatamiz
+        const sheetRowId = this.generateSheetRowId(monthName, actualSheetRow, item.type);
         validSheetRowIds.add(sheetRowId);
         
         // Sheet ma'lumotlarini saqlab qolamiz
         sheetItems.push({
           ...item,
           sheetRowId,
-          sheetRow: sheetRowForId,
+          sheetRow: actualSheetRow,
         });
       }
 
