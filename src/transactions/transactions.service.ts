@@ -166,19 +166,28 @@ export class TransactionsService {
 
   async findRecent(month: number) {
     const now = new Date();
+    const currentYear = now.getFullYear();
   
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // Oy chegaralari
+    const monthStart = new Date(currentYear, month - 1, 1);
+    const monthEnd = new Date(currentYear, month, 0, 23, 59, 59, 999);
+  
+    const todayStart = new Date(currentYear, now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000 - 1);
-  
     const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
     const yesterdayEnd = new Date(todayStart.getTime() - 1);
   
-    // Bugun yoki kechagi transactionlar
+    // ✅ Bugun yoki kecha — lekin faqat shu oy ichidan
     let transactions = await this.prisma.transaction.findMany({
       where: {
-        OR: [
-          { date: { gte: todayStart, lte: todayEnd } },
-          { date: { gte: yesterdayStart, lte: yesterdayEnd } },
+        AND: [
+          { month: month },          // ✅ shu oy filteri qo'shildi
+          {
+            OR: [
+              { date: { gte: todayStart, lte: todayEnd } },
+              { date: { gte: yesterdayStart, lte: yesterdayEnd } },
+            ],
+          },
         ],
       },
       include: { category: true },
@@ -186,15 +195,12 @@ export class TransactionsService {
       take: 5,
     });
   
-    // Topilmasa — shu oyning so'nggi 5 tasi (year avtomatik date dan olinadi)
+    // Topilmasa — shu oyning so'nggi 5 tasi
     if (transactions.length === 0) {
-      const currentYear = now.getFullYear();
       transactions = await this.prisma.transaction.findMany({
         where: {
-          date: {
-            gte: new Date(currentYear, month - 1, 1),
-            lte: new Date(currentYear, month, 0, 23, 59, 59, 999),
-          },
+          month: month,              // ✅ date range + month ikkalasi
+          date: { gte: monthStart, lte: monthEnd },
         },
         include: { category: true },
         orderBy: { date: 'desc' },
@@ -202,10 +208,7 @@ export class TransactionsService {
       });
     }
   
-    return {
-      success: true,
-      data: transactions,
-    };
+    return { success: true, data: transactions };
   }
   
 

@@ -3,6 +3,7 @@ import {
   Logger,
   BadRequestException,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { GoogleSheetsService } from '../google-sheets/google-sheets.service';
 import { FinanceRecord } from '../common/types/finance.types';
@@ -11,10 +12,21 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TransactionsService } from '../transactions/transactions.service';
 
 @Injectable()
-export class FinanceService {
+export class FinanceService implements OnModuleInit {
   private readonly logger = new Logger(FinanceService.name);
 
   constructor(private readonly sheets: GoogleSheetsService, private readonly prisma: PrismaService, private readonly transactionsService: TransactionsService) {}
+
+  // finance.service.ts ga qo'shing
+
+async onModuleInit() {
+  try {
+    await this.syncCategoriesToDb();
+    this.logger.log('✅ Kategoriyalar avtomatik sinxronlandi');
+  } catch (e: any) {
+    this.logger.error(`❌ Kategoriya sync xatosi: ${e.message}`);
+  }
+}
 
   // ─── CREATE ───────────────────────────────────────────────────────────────────
 
