@@ -26,24 +26,43 @@ export class TransactionsService {
     const now = new Date();
     const currentMonth = now.getMonth() + 1; // 1-12
     const currentYear = now.getFullYear();
-
-    // 1. Bazadan oxirgi sync qilingan tranzaksiyani topamiz
-    const lastTransaction = await this.prisma.transaction.findFirst({
-      orderBy: { createdAt: 'desc' },
-      select: { month: true, year: true }
-    });
-
-    // 2. Agar bazada joriy oy va yil bo'lsa, demak oy hali o'zgarmagan
-    if (lastTransaction && 
-        lastTransaction.month === currentMonth && 
-        lastTransaction.year === currentYear) {
-      this.logger.log(`Oy hali o‘zgarmagan (${currentMonth}-${currentYear}). Sinxronizatsiya shart emas.`);
-      return;
+  
+    try {
+      // 1. Bazada joriy oy va yil uchun jami qancha tranzaksiya borligini sanaymiz
+      const currentMonthCount = await this.prisma.transaction.count({
+        where: {
+          month: currentMonth,
+          year: currentYear,
+        },
+      });
+  
+      // 2. Agar bazada joriy oy uchun UMUMAN ma'lumot bo'lmasa (tozalangan bo'lsa)
+      if (currentMonthCount === 0) {
+        this.logger.warn(`Bazada ${currentMonth}-${currentYear} uchun ma'lumot topilmadi. Sheets'dan yuklanmoqda...`);
+        await this.syncCurrentMonth();
+        return;
+      }
+  
+      // 3. Qo'shimcha tekshiruv: Oxirgi tranzaksiya yil/oyini ham tekshirib qo'yamiz (xavfsizlik uchun)
+      const lastTransaction = await this.prisma.transaction.findFirst({
+        orderBy: { createdAt: 'desc' },
+        select: { month: true, year: true }
+      });
+  
+      if (lastTransaction && 
+          (lastTransaction.month !== currentMonth || lastTransaction.year !== currentYear)) {
+        this.logger.warn('Yangi oy boshlangan, lekin bazada hali eski oy ma’lumotlari turibdi. Sync boshlandi...');
+        await this.syncCurrentMonth();
+        return;
+      }
+  
+      this.logger.log(`Sinxronizatsiya shart emas. Bazada joriy oy uchun ${currentMonthCount} ta ma'lumot bor.`);
+      
+    } catch (error) {
+      this.logger.error('Tekshiruv vaqtida xatolik yuz berdi:', error);
+      // Xatolik bo'lsa ham ehtiyotkorlik yuzasidan syncni chaqirib qo'yish mumkin
+      // await this.syncCurrentMonth(); 
     }
-
-    // 3. Agar oy o'zgargan bo'lsa yoki baza bo'sh bo'lsa, sync qilamiz
-    this.logger.warn('Yangi oy aniqlandi! Sheets ma’lumotlari bazaga ko‘chirilmoqda...');
-    await this.syncCurrentMonth();
   }
 
 
