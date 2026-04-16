@@ -14,13 +14,16 @@ export class SyncService implements OnModuleInit {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  // ✅ Polling YO'Q — faqat eski yozuvlarni tozalash
   async onModuleInit() {
-    this.logger.log('🚀 SyncService ishga tushdi — cleanup boshlandi');
+    this.logger.log('🚀 SyncService ishga tushdi — Webhook rejimida tayyor');
+  }
+
+  async runFullCleanup() {
+    this.logger.log('🧹 Tozalash boshlandi...');
     for (const month of Object.keys(this.monthMap)) {
       await this.cleanupDuplicates(month);
     }
-    this.logger.log('✅ Cleanup tugadi — webhook rejimida ishlayapti');
+    this.logger.log('✅ Tozalash tugadi');
   }
 
   // YANGI (to'g'ri format — cleanup o'chirmaydi)

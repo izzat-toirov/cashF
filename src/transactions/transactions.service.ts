@@ -12,13 +12,17 @@ export class TransactionsService {
   constructor(private readonly sheetsService: GoogleSheetsService, private readonly prisma: PrismaService,) {}
 
   // transactions.service.ts ichida
-async onModuleInit() {
-  // 10 soniya kutamiz, SyncService cleanup qilib bo'lishi uchun
-  this.logger.log('Sinxronizatsiya 10 soniyadan keyin boshlanadi...');
-  setTimeout(async () => {
-    await this.checkAndSyncIfMonthChanged();
-  }, 10000); 
-}
+  async onModuleInit() {
+    this.logger.log('Sinxronizatsiya 10 soniyadan keyin boshlanadi...');
+    // Timeout faqat server to'liq ko'tarilib olishi uchun
+    setTimeout(async () => {
+      try {
+        await this.checkAndSyncIfMonthChanged();
+      } catch (error) {
+        this.logger.error('Initial sync xatosi:', error);
+      }
+    }, 10000); 
+  }
 
   // Har kuni yarim tunda avtomat tekshiradi
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
