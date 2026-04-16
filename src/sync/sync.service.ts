@@ -74,9 +74,10 @@ export class SyncService implements OnModuleInit {
   }
 
   // Sheets bilan solishtirish: DB da bor lekin Sheets da yo'q => o'chir
-  // MUHIM: Sheets bo'sh kelsa (xato yoki haqiqatan bo'sh) — hech nima o'chirmaydi
+  // MUHIM: Sheets bo'sh kelsa (xato yoki haqiqatan bo'sh) — hech nima o'chirmaymiz
   private async compareWithSheets(monthName: string, monthNum: number) {
     try {
+      // getFullMonthData orqali sheets dan ma'lumot olish
       const monthData = await this.sheetsService.getFullMonthData(monthName);
 
       // Sheets dan ma'lumot kelmasa — xavfsiz tomon: hech nima o'chirmaymiz
@@ -85,7 +86,6 @@ export class SyncService implements OnModuleInit {
         return { skipped: true };
       }
 
-      // Sheets dagi barcha sheetRowId larni to'plash
       // getFullMonthData da id: "expense-row-4" (0-based index), lekin
       // haqiqiy sheet row = index + 5 (chunki B5 dan boshlanadi)
       const validSheetRowIds = new Set<string>();
@@ -99,14 +99,25 @@ export class SyncService implements OnModuleInit {
         validSheetRowIds.add(sheetRowId);
       }
 
+      // DB dan o'sha oydagilarni olish
       const dbTx = await this.prisma.transaction.findMany({
         where: { month: monthNum, year: 2026 },
         select: { id: true, sheetRowId: true },
       });
 
       // DB da bor, Sheets da yo'q => o'chir
+      // MUHIM: Faqat to'g'ri formatdagilarini o'chiramiz, noto'g'ri formatdagilar separate validation da o'chiriladi
       const toDelete = dbTx
-        .filter(tx => tx.sheetRowId && !validSheetRowIds.has(tx.sheetRowId))
+        .filter(tx => {
+          // 1. sheetRowId bo'lishi kerak
+          if (!tx.sheetRowId) return false;
+          
+          // 2. To'g'ri formatda bo'lishi kerak
+          if (!this.VALID_SHEET_ROW_ID_REGEX.test(tx.sheetRowId)) return false;
+          
+          // 3. Sheets da yo'q bo'lishi kerak
+          return !validSheetRowIds.has(tx.sheetRowId);
+        })
         .map(tx => tx.id);
 
       if (toDelete.length > 0) {
