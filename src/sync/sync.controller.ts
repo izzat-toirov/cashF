@@ -34,4 +34,11 @@ export class SyncController {
   async syncCategory(@Body() body: { name: string; type: string }) {
     return this.syncService.syncCategoryFromSheet(body);
   }
+
+  // Qo'lda yozuvlarni o'chirish
+  @Delete('delete-by-ids')
+  @ApiOperation({ summary: "SheetRowIds bo'yicha yozuvlarni o'chirish" })
+  async deleteBySheetRowIds(@Body() body: { sheetRowIds: string[] }) {
+    return this.syncService.deleteBySheetRowIds(body.sheetRowIds);
+  }
 }
