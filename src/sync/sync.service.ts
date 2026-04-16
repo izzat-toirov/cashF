@@ -16,17 +16,11 @@ export class SyncService implements OnModuleInit {
 
   // ✅ Polling YO'Q — faqat eski yozuvlarni tozalash
   async onModuleInit() {
-    // BU YERDAN cleanupDuplicates CHAQUVI OLIB TASHLANDI
-    this.logger.log('🚀 SyncService ishga tushdi — Webhook rejimida tayyor');
-  }
-
-  // Dublikatlarni tozalashni faqat kerak bo'lganda (Manual yoki Cron) chaqiring
-  async runFullCleanup() {
-    this.logger.log('🧹 Tozalash boshlandi...');
+    this.logger.log('🚀 SyncService ishga tushdi — cleanup boshlandi');
     for (const month of Object.keys(this.monthMap)) {
       await this.cleanupDuplicates(month);
     }
-    this.logger.log('✅ Tozalash tugadi');
+    this.logger.log('✅ Cleanup tugadi — webhook rejimida ishlayapti');
   }
 
   // YANGI (to'g'ri format — cleanup o'chirmaydi)
