@@ -8,11 +8,12 @@
   "scripts": {
   "build": "nest build",
   "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+  
 
   "start": "nest start",
   "start:dev": "prisma migrate reset --force && prisma generate && nest start --watch",
   "start:debug": "prisma migrate reset --force && prisma generate && nest start --debug --watch",
-  "start:prod": "node dist/main",
+ "start:prod": "prisma migrate reset --force && prisma generate && node dist/main",
 
   "db:reset": "prisma migrate reset --force && prisma generate",
   "db:fresh": "prisma migrate reset --force && prisma migrate deploy && prisma generate",
