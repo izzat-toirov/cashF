@@ -23,10 +23,11 @@ export class SyncService implements OnModuleInit {
     this.logger.log('✅ Cleanup tugadi — webhook rejimida ishlayapti');
   }
 
-  private generateSheetRowId(monthName: string, row: number | string, type: string): string {
-    const rowNum = String(row).replace(/\D+/g, '');
-    return `${monthName}-2026-${type.toLowerCase()}-row-${rowNum}`;
-  }
+  // YANGI (to'g'ri format — cleanup o'chirmaydi)
+private generateSheetRowId(monthName: string, row: number | string, type: string): string {
+  const rowNum = String(row).replace(/\D+/g, '');
+  return `${monthName}-2026-${type.toLowerCase()}-${rowNum}`;  // "row-" yo'q
+}
 
   private getMonthNumber(monthName: string): number {
     return this.monthMap[monthName] ?? new Date().getMonth() + 1;
